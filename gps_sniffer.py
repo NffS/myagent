@@ -34,7 +34,9 @@ import sys
 # Defaults: a handful of ports cheap car trackers commonly ship with. We don't
 # yet know which one AgentMS3 uses, so we listen on all of them at once. When
 # you reconfigure the device, point it at ONE of these (and tell me which).
-DEFAULT_PORTS = [5023, 5020, 5013, 5001, 5000, 8090, 7700, 9000]
+DEFAULT_PORTS = [5023, 5020, 5013, 5001, 5000, 8090, 7700, 9000,
+                 20332, 21013, 20963,  # Wialon IPS / Combine / Retranslator
+                 11111]                # Magic Systems Car-Online (Agent MS family)
 
 # GT06/Concox protocol numbers we should ACK to keep the device online.
 # (login + the various heartbeat/status variants). Location packets are NOT
@@ -83,9 +85,16 @@ def fingerprint(data):
         return "Possibly Teltonika (IMEI handshake: 00 0F <imei ascii>)"
     if data[:4] == b"\x00\x00\x00\x00":
         return "Possibly Teltonika Codec8 AVL packet (0x00000000 preamble)"
+    if data[:3] == b"#L#" or data[:4] == b"#SD#" or data[:3] in (b"#D#", b"#P#", b"#B#", b"#M#"):
+        return "Wialon IPS (#...# ASCII frames) - used by AGENT-brand / Wialon trackers (often :20332)"
+    if data[:4] == b"@NTC":
+        return "Navtelecom NTCB/FLEX (ASCII '@NTC' handshake)"
+    if len(data) >= 2 and data[0] == 0x01 and data[1] == 0x00:
+        return "Possibly EGTS (Russian GOST R 56360, binary: PRV=01 SKID=00)"
     if all(32 <= b < 127 or b in (9, 13, 10) for b in data[:64]):
         return "ASCII / text-based protocol (NMEA-like or TK-style) - read the |ascii| gutter"
-    return "UNKNOWN - capture a few more packets and share the hex dump"
+    return ("UNKNOWN / likely proprietary (e.g. Magic Systems Car-Online, usually :11111) "
+            "- capture several packets and share the hex dump for reverse-engineering")
 
 
 # CRC-16/X.25 (a.k.a. CRC-ITU) - the checksum GT06/Concox uses.

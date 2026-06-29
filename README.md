@@ -1,63 +1,78 @@
-# myagent — self-hosted GPS tracker server
+# myagent — self-hosted server for an "AgentMS3" car tracker
 
-Self-hosted server for a car GPS anti-theft tracker (sold as "AgentMS3") whose
-original hosted platform went offline. Goal: receive the device's data on our
-own server, then drive an Android app from it.
+Self-hosted replacement server + protocol-reversing toolkit for a car anti-theft
+tracker labeled **AgentMS3**, whose hosted tracking server was lost. Goal:
+receive the device's data on our own server, then drive an Android app from it.
 
-## Status
+## What the device actually is
 
-1. **Protocol capture** — done. `gps_sniffer.py` listens for the device and
-   logs/identifies its protocol.
-2. **Protocol parsing + app API** — next, once the real device checks in.
+- **`AgentMS3`** self-reports as `AgentMS3 ver.02.23d` (2018) — a **Magic Systems**
+  (Меджик Системс, St. Petersburg) hardwired car alarm + satellite immobilizer
+  with GPS/GLONASS. Not a generic Chinese GT06/Meitrack beacon.
+- Native cloud: **Car-Online**, device endpoint **`v5.car-online.ru:11111`** (app
+  "Car-Online"). The wire protocol is **proprietary binary**, undocumented, and
+  not supported by Traccar/Wialon.
+- It can be repointed to a custom server with the **undocumented SMS commands**
+  `Server <ip>` and `Rserver <ip>` (port is fixed at 11111). Confirmed via the
+  `VERSION?` reply.
 
-The name "AgentMS3" appears to refer to **Meitrack's MS03 hosted platform**, so
-the device most likely speaks **Meitrack** (TCP 5020, ASCII `$$...*<chk>\r\n`)
-or **GT06/Concox** (TCP 5023, binary `78 78 ... 0D 0A`). Confirmed from the
-first real packet.
+### Protocol notes (reverse-engineering in progress)
+
+- Device check-in / login packet (50 bytes):
+  `40 00 32 00 1c 46 00 00 00 00 00 00 <16-bit seq LE> 00 0e 1e 00 00 00`
+  followed by a **30-digit ASCII device code** (e.g. `000000000065568704089418044847`).
+  `40`=`@` start, offset 2 = `0x32` = total length, offset 16 = `0x1e` = 30 = id length.
+- The real Car-Online server sends **no ACK** — it's one-way ingest. The device
+  also emits a stray `AT+CREG?` (modem) keepalive.
+- A parked device sends **only keepalives**; **position frames appear on
+  motion/ignition events**. Capturing those (via the proxy) is the next step.
 
 ## Files
 
-| File | What it does |
+| File | Purpose |
 |---|---|
-| `gps_sniffer.py` | Protocol-agnostic TCP+UDP listener. Hex-dumps every byte, fingerprints common tracker protocols (GT06, TK103/Coban, H02, Teltonika, Meitrack, Queclink), and auto-ACKs GT06 login/heartbeat (CRC-16/X.25) so the device stays online. Stdlib only. |
-| `http_server.py` | Minimal HTTP endpoint (`/`, `/health`). Placeholder for the Android app's JSON/WebSocket API. Stdlib only. |
+| `carproxy.py` | Transparent TCP proxy / MITM: device ↔ real Car-Online, **logging both directions** — `proxy_*.log` (human hex+ascii), `frames_*.jsonl` (one JSON record per frame, for offline analysis), `px_*_{DEV2SRV,SRV2DEV}.bin` (raw). Keeps the device working while we capture the full protocol. |
+| `gps_sniffer.py` | Standalone protocol-agnostic TCP+UDP logger. Hex-dumps + fingerprints common tracker protocols (GT06/Concox, Meitrack, Coban/TK103, H02, Teltonika, Wialon IPS, EGTS, Navtelecom) and auto-ACKs GT06. Stdlib only. |
+| `monitor.py` | Watches the proxy log and exits/alerts on the first **non-keepalive** (likely position) frame. |
+| `http_server.py` | Minimal HTTP endpoint (`/`, `/health`) — seed for the Android app's JSON/WebSocket API. |
 
 ## Running
 
 ```bash
-python3 gps_sniffer.py                 # listen on the default common ports
-python3 gps_sniffer.py --ports 5020    # one port
-python3 gps_sniffer.py --no-smart-ack  # observe only, never reply
+python3 carproxy.py --listen-port 11111 --upstream v5.car-online.ru:11111
+python3 gps_sniffer.py --ports 11111          # standalone capture (no upstream)
+python3 monitor.py                            # alert on first position frame
 python3 http_server.py --port 80
 ```
 
-Captures are written to `./captures/` (git-ignored): a human-readable
-`capture_*.log` (hex + ASCII), raw `raw_*.bin` per peer, and `console.log`.
+Captures (git-ignored) are written to `./captures/`.
 
-### Deployment
+## Deployment
 
-Both run as `systemd` services on the server (`gps-sniffer.service`,
-`gps-http.service`) — auto-restart, enabled on boot.
+On the server (`173.242.49.128`) as `systemd` services — auto-restart, enabled on boot:
+
+- `gps-proxy` — `carproxy.py` on `:11111` (the active capture path)
+- `gps-http` — `http_server.py` on `:80`
+- `gps-sniffer` — standalone sniffer (available; stopped while the proxy owns `:11111`)
 
 ```bash
-journalctl -u gps-sniffer -f          # watch the tracker connect
-systemctl status|restart|stop gps-sniffer
+journalctl -u gps-proxy -f
+systemctl status|restart|stop gps-proxy
 ```
 
-## Pointing the device at the server
+## Repointing the device
 
-Send the SIM an SMS with the new server IP + port (exact syntax is
-device-specific):
+From the registered owner phone, SMS the device's SIM (port is always 11111):
 
 ```
-# Meitrack family
-0000,A21,1,<SERVER_IP>,5020,<APN>,,
-
-# GT06 / Coban family
-APN,<APN>#
-SERVER,0,<SERVER_IP>,5023,0#
-STATUS#
+Server 173.242.49.128       → Server ok
+Rserver 173.242.49.128      → Reserve server ok   (Agent MS has a reserve slot — set it too)
+version?                    → confirms model, firmware, SERVER <ip>, device code
 ```
 
-The listener identifies the protocol from packet contents, not the port, so any
-of the listened ports will be captured.
+## Status / next
+
+- ✅ Device identified, repointed, connecting to our server, traffic captured both ways.
+- ⏳ Only keepalives captured so far (device parked). **Next:** capture position
+  frames on a real drive → decode lat/lon/speed/time → standalone parser →
+  SQLite → JSON/WebSocket API → Android app (and drop the Car-Online dependency).
