@@ -22,8 +22,18 @@ receive the device's data on our own server, then drive an Android app from it.
   `40 00 32 00 1c 46 00 00 00 00 00 00 <16-bit seq LE> 00 0e 1e 00 00 00`
   followed by a **30-digit ASCII device code** (e.g. `000000000065568704089418044847`).
   `40`=`@` start, offset 2 = `0x32` = total length, offset 16 = `0x1e` = 30 = id length.
+- **Bytes 12-13 are a little-endian sequence counter** that **increments every
+  packet** (`2d18`, `2d19`, `2d1a`, …). A valid ACK almost certainly has to echo
+  the *current* counter, so a fixed reply only ever matches one cycle.
 - The real Car-Online server sends **no ACK** — it's one-way ingest. The device
   also emits a stray `AT+CREG?` (modem) keepalive.
+- **ACK reversing (in progress):** to coax the device into streaming we replay
+  candidate ACKs in capture-only mode via `carproxy.py --reply-template`. The
+  template echoes the live seq back with the `{seq}` token (raw bytes
+  `data[12:14]`) or `{seqhex}` (its ASCII hex). Current strongest candidate:
+  `40 00 03 00 46 <seq>`, i.e. `--reply-template 'hex:40000300 46 {seq}'`
+  (`40`=`@` start, `46`=`F`). Frames shorter than 14 bytes (e.g. `AT+CREG?`) are
+  not replied to.
 - A parked device sends **only keepalives**; **position frames appear on
   motion/ignition events**. Capturing those (via the proxy) is the next step.
 
@@ -41,6 +51,7 @@ receive the device's data on our own server, then drive an Android app from it.
 ```bash
 python3 carproxy.py                            # capture-only (default): log device data
 python3 carproxy.py --relay                    # proxy mode: also forward to Car-Online
+python3 carproxy.py --reply-template 'hex:40000300 46 {seq}'   # capture-only: ACK with live seq echoed back
 python3 gps_sniffer.py --ports 11111          # standalone capture (no upstream)
 python3 monitor.py                            # alert on first position frame
 python3 http_server.py --port 80
