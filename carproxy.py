@@ -44,11 +44,12 @@ def hexdump(data, indent="    "):
 
 
 class Proxy:
-    def __init__(self, listen_port, up_host, up_port, capdir):
+    def __init__(self, listen_port, up_host, up_port, capdir, no_upstream=False):
         self.listen_port = listen_port
         self.up_host = up_host
         self.up_port = up_port
         self.capdir = capdir
+        self.no_upstream = no_upstream
         os.makedirs(capdir, exist_ok=True)
         self.logpath = os.path.join(
             capdir, "proxy_%s.log" % datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
@@ -74,7 +75,9 @@ class Proxy:
         ls.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         ls.bind(("0.0.0.0", self.listen_port))
         ls.listen(64)
-        self.log("PROXY listening :%d  ->  %s:%d" % (self.listen_port, self.up_host, self.up_port))
+        mode = ("CAPTURE-ONLY (forwarding to Car-Online DISABLED)" if self.no_upstream
+                else "relay -> %s:%d" % (self.up_host, self.up_port))
+        self.log("PROXY listening :%d   mode: %s" % (self.listen_port, mode))
         self.log("  human log : %s" % self.logpath)
         self.log("  frames    : %s" % self.framespath)
         while True:
@@ -87,6 +90,12 @@ class Proxy:
         base = addr[0].replace(".", "-")
         rawc = os.path.join(self.capdir, "px_%s_DEV2SRV.bin" % base)
         raws = os.path.join(self.capdir, "px_%s_SRV2DEV.bin" % base)
+        if self.no_upstream:
+            # Forwarding disabled: capture the device's data, send nothing onward.
+            self.log("=== CAPTURE-ONLY (forwarding to Car-Online DISABLED) %s" % peer)
+            self.pump(client, None, "DEV>SRV(capture-only)", peer, rawc)
+            self.log("--- closed %s (capture-only)" % peer)
+            return
         try:
             up = socket.create_connection((self.up_host, self.up_port), timeout=15)
         except Exception as e:
@@ -144,9 +153,11 @@ def main():
     ap.add_argument("--listen-port", type=int, default=11111)
     ap.add_argument("--upstream", default="v5.car-online.ru:11111")
     ap.add_argument("--capdir", default="/root/captures")
+    ap.add_argument("--no-upstream", action="store_true",
+                    help="capture-only: do NOT forward to Car-Online (just log the device's data)")
     a = ap.parse_args()
     host, port = a.upstream.rsplit(":", 1)
-    Proxy(a.listen_port, host, int(port), a.capdir).serve()
+    Proxy(a.listen_port, host, int(port), a.capdir, no_upstream=a.no_upstream).serve()
 
 
 if __name__ == "__main__":
