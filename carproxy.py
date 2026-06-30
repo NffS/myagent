@@ -84,20 +84,23 @@ class Proxy:
     def handle(self, client, addr):
         peer = "%s:%d" % addr
         self.log("+++ device connected %s" % peer)
+        base = addr[0].replace(".", "-")
+        rawc = os.path.join(self.capdir, "px_%s_DEV2SRV.bin" % base)
+        raws = os.path.join(self.capdir, "px_%s_SRV2DEV.bin" % base)
         try:
             up = socket.create_connection((self.up_host, self.up_port), timeout=15)
         except Exception as e:
-            self.log("!!! upstream connect FAILED for %s: %s (closing device)" % (peer, e))
-            client.close()
+            # Upstream (Car-Online) is down: still capture the device's bytes --
+            # we just can't forward them. A one-sided capture beats losing the data.
+            self.log("!!! upstream connect FAILED for %s: %s -- CAPTURE-ONLY mode" % (peer, e))
+            self.pump(client, None, "DEV>SRV(no-upstream)", peer, rawc)
+            self.log("--- closed %s (capture-only)" % peer)
             return
         self.log("=== relaying %s <-> %s:%d" % (peer, self.up_host, self.up_port))
-        base = addr[0].replace(".", "-")
         t1 = threading.Thread(target=self.pump, args=(
-            client, up, "DEV>SRV", peer,
-            os.path.join(self.capdir, "px_%s_DEV2SRV.bin" % base)), daemon=True)
+            client, up, "DEV>SRV", peer, rawc), daemon=True)
         t2 = threading.Thread(target=self.pump, args=(
-            up, client, "SRV>DEV", peer,
-            os.path.join(self.capdir, "px_%s_SRV2DEV.bin" % base)), daemon=True)
+            up, client, "SRV>DEV", peer, raws), daemon=True)
         t1.start()
         t2.start()
         t1.join()
@@ -111,6 +114,8 @@ class Proxy:
             self.framesfh.flush()
 
     def pump(self, src, dst, tag, peer, rawpath):
+        """Relay src->dst while logging every chunk. dst=None => capture-only
+        (log + save to disk but don't forward), used when upstream is down."""
         try:
             while True:
                 data = src.recv(65535)
@@ -120,11 +125,14 @@ class Proxy:
                 self.record(tag, peer, data)
                 with open(rawpath, "ab") as fh:
                     fh.write(data)
-                dst.sendall(data)
+                if dst is not None:
+                    dst.sendall(data)
         except Exception:
             pass
         finally:
             for s in (src, dst):
+                if s is None:
+                    continue
                 try:
                     s.close()
                 except Exception:
