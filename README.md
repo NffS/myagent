@@ -31,7 +31,7 @@ receive the device's data on our own server, then drive an Android app from it.
 
 | File | Purpose |
 |---|---|
-| `carproxy.py` | Transparent TCP proxy / MITM: device ↔ real Car-Online, **logging both directions** — `proxy_*.log` (human hex+ascii), `frames_*.jsonl` (one JSON record per frame, for offline analysis), `px_*_{DEV2SRV,SRV2DEV}.bin` (raw). Keeps the device working while we capture the full protocol. |
+| `carproxy.py` | Capture endpoint for the device, **logging to** `proxy_*.log` (human hex+ascii), `frames_*.jsonl` (one JSON record per frame, for offline analysis), and `px_*_{DEV2SRV,SRV2DEV}.bin` (raw). **Default: capture-only** (log the device's data, forward nothing). Pass `--relay` for proxy/MITM mode (also forward to Car-Online and log both directions). |
 | `gps_sniffer.py` | Standalone protocol-agnostic TCP+UDP logger. Hex-dumps + fingerprints common tracker protocols (GT06/Concox, Meitrack, Coban/TK103, H02, Teltonika, Wialon IPS, EGTS, Navtelecom) and auto-ACKs GT06. Stdlib only. |
 | `monitor.py` | Watches the proxy log and exits/alerts on the first **non-keepalive** (likely position) frame. |
 | `http_server.py` | Minimal HTTP endpoint (`/`, `/health`) — seed for the Android app's JSON/WebSocket API. |
@@ -39,7 +39,8 @@ receive the device's data on our own server, then drive an Android app from it.
 ## Running
 
 ```bash
-python3 carproxy.py --listen-port 11111 --upstream v5.car-online.ru:11111
+python3 carproxy.py                            # capture-only (default): log device data
+python3 carproxy.py --relay                    # proxy mode: also forward to Car-Online
 python3 gps_sniffer.py --ports 11111          # standalone capture (no upstream)
 python3 monitor.py                            # alert on first position frame
 python3 http_server.py --port 80
