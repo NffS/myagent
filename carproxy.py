@@ -81,7 +81,10 @@ def render_reply(template, is_hex, data):
 
 class Proxy:
     def __init__(self, listen_port, up_host, up_port, capdir, relay=False,
-                 reply=None, reply_template=None, reply_sweep=None):
+                 reply=None, reply_template=None, reply_sweep=None,
+                 keepalive_interval=0, keepalive_bytes=None):
+        self.keepalive_interval = keepalive_interval
+        self.keepalive_bytes = keepalive_bytes
         self.listen_port = listen_port
         self.up_host = up_host
         self.up_port = up_port
@@ -128,6 +131,15 @@ class Proxy:
             c, a = ls.accept()
             threading.Thread(target=self.handle, args=(c, a), daemon=True).start()
 
+    def keepalive_loop(self, sock, peer, stop):
+        # hold the GSM module's transparent-TCP socket open past its idle timeout
+        while not stop.wait(self.keepalive_interval):
+            try:
+                sock.sendall(self.keepalive_bytes)
+                self.log("    >>> keepalive to %s: %s" % (peer, self.keepalive_bytes.hex()))
+            except Exception:
+                break
+
     def handle(self, client, addr):
         peer = "%s:%d" % addr
         self.log("+++ device connected %s" % peer)
@@ -151,8 +163,15 @@ class Proxy:
                 self.log("=== CAPTURE-ONLY %s (reply %s)" % (peer, self.reply.hex()))
             else:
                 self.log("=== CAPTURE-ONLY %s" % peer)
+            stop = threading.Event()
+            if self.keepalive_interval and self.keepalive_bytes:
+                self.log("    keepalive: every %ds send %s" % (
+                    self.keepalive_interval, self.keepalive_bytes.hex()))
+                threading.Thread(target=self.keepalive_loop,
+                                 args=(client, peer, stop), daemon=True).start()
             self.pump(client, None, "DEV>SRV(capture-only)", peer, rawc,
                       reply=self.reply, reply_template=rtmpl)
+            stop.set()
             self.log("--- closed %s (capture-only)" % peer)
             return
         try:
@@ -248,6 +267,12 @@ def main():
                          "--reply-template). Rotate a DIFFERENT one per connection (round-robin) "
                          "to test many candidate ACKs hands-off; the chosen candidate index is "
                          "logged per connection. Use hex templates (commas only separate items).")
+    ap.add_argument("--keepalive-interval", type=int, default=0,
+                    help="capture-only: send --keepalive-hex every N seconds (0=off) to hold the "
+                         "socket open past the GSM module's ~60s transparent-TCP idle timeout, to "
+                         "test whether the device streams telemetry over a longer-lived connection.")
+    ap.add_argument("--keepalive-hex", default="0d0a",
+                    help="capture-only: hex bytes for the keepalive (default 0d0a = CRLF)")
     # deprecated no-op, kept so older service invocations don't break (capture-only is the default now)
     ap.add_argument("--no-upstream", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
@@ -279,8 +304,10 @@ def main():
             except ValueError as e:
                 ap.error("invalid --reply-sweep item %r: %s" % (item, e))
             reply_sweep.append(tmpl)
+    keepalive_bytes = bytes.fromhex(a.keepalive_hex) if a.keepalive_interval else None
     Proxy(a.listen_port, host, int(port), a.capdir, relay=a.relay,
-          reply=reply, reply_template=reply_template, reply_sweep=reply_sweep).serve()
+          reply=reply, reply_template=reply_template, reply_sweep=reply_sweep,
+          keepalive_interval=a.keepalive_interval, keepalive_bytes=keepalive_bytes).serve()
 
 
 if __name__ == "__main__":
