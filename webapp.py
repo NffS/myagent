@@ -152,9 +152,13 @@ var ICONS={
 };
 function chip(icon,val,unit,label,metric){
   if(val==null||val===undefined||val==='') return '';
-  return '<div class="chip" onclick="openGraph(\''+metric+'\',\''+label+'\')"><span class="ic">'+icon+
+  return '<div class="chip" data-m="'+metric+'" data-l="'+label+'"><span class="ic">'+icon+
          '</span><span class="cv">'+val+(unit||'')+'</span><span class="cl">'+label+'</span></div>';
 }
+document.getElementById('top').addEventListener('click',function(e){
+  var c=e.target.closest&&e.target.closest('.chip');
+  if(c&&c.getAttribute('data-m')) openGraph(c.getAttribute('data-m'),c.getAttribute('data-l'));
+});
 // reverse-geocode to English, only when the position moves noticeably
 var lastGeo=null;
 async function geocode(lat,lon){
