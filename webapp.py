@@ -21,6 +21,7 @@ Routes:
 
 import argparse
 import base64
+import datetime
 import json
 import os
 import sqlite3
@@ -51,6 +52,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="Pragma" content="no-cache"><meta http-equiv="Expires" content="0">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/uplot@1.6.31/dist/uPlot.min.css">
+<script src="https://unpkg.com/uplot@1.6.31/dist/uPlot.iife.min.js"></script>
 <style>
  *{box-sizing:border-box}
  html,body{height:100%}
@@ -94,7 +97,12 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #gbox{background:#fff;border-radius:10px;padding:14px 16px;width:680px;max-width:92vw;box-shadow:0 10px 40px rgba(0,0,0,.35)}
  #ghead{display:flex;justify-content:space-between;align-items:center;font-weight:600;margin-bottom:8px}
  #gclose{cursor:pointer;color:#999;font-size:18px;padding:0 6px;line-height:1}
- #gchart{min-height:220px}
+ #gperiods{display:flex;gap:6px;margin-bottom:8px}
+ #gperiods button{border:1px solid #ccc;background:#fff;border-radius:6px;padding:3px 10px;cursor:pointer;font-size:12px}
+ #gperiods button.on{background:#0b6;color:#fff;border-color:#0b6}
+ #gchart{min-height:240px}
+ #ghint{font-size:11px;color:#aaa;margin-top:6px}
+ .u-legend{font-size:12px}
 </style></head><body>
 <div id="top">
   <div class="brand">Fiesta<small id="online">connecting…</small></div>
@@ -109,7 +117,9 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <div id="jwrap"><div id="jlist"></div></div>
 <div id="gmodal" onclick="if(event.target===this)closeGraph()">
   <div id="gbox"><div id="ghead"><span id="gtitle"></span><span id="gclose" onclick="closeGraph()">✕</span></div>
-  <div id="gchart"></div></div>
+  <div id="gperiods"><button data-h="24">24h</button><button data-h="168">7d</button><button data-h="720">30d</button><button data-h="2160">90d</button></div>
+  <div id="gchart"></div>
+  <div id="ghint">drag across the chart to zoom · double-click to reset</div></div>
 </div>
 <script>
 var BUILD='__BUILD__';
@@ -226,38 +236,40 @@ async function tick(){
   }).join('');
  }catch(e){ document.getElementById('online').textContent='error: '+e; }
 }
+var uplotInst=null, gMetric=null, gLabel=null, gHours=24;
 function openGraph(metric,label){
-  document.getElementById('gtitle').textContent=label+' — last 90 days';
-  document.getElementById('gchart').innerHTML='<div style="padding:40px;color:#888">loading…</div>';
+  gMetric=metric; gLabel=label; gHours=24;
+  document.getElementById('gtitle').textContent=label;
   document.getElementById('gmodal').style.display='flex';
-  fetch('/api/metric?name='+encodeURIComponent(metric),{cache:'no-store'})
-    .then(function(r){return r.json();})
-    .then(function(data){ document.getElementById('gchart').innerHTML=drawChart(data); })
-    .catch(function(e){ document.getElementById('gchart').innerHTML='<div style="padding:40px;color:#c0392b">error: '+e+'</div>'; });
+  markPeriod(); loadGraph();
 }
-function closeGraph(){ document.getElementById('gmodal').style.display='none'; }
-function drawChart(data){
-  if(!data||!data.length) return '<div style="padding:40px;color:#888">No data yet — the graph fills in as data is collected (~1 point/min).</div>';
-  var W=640,H=300,pad=44;
-  var xs=data.map(function(d){return new Date(String(d[0]).replace(' ','T')+'Z').getTime();});
-  var ys=data.map(function(d){return d[1];});
-  var x0=Math.min.apply(null,xs),x1=Math.max.apply(null,xs);
-  var y0=Math.min.apply(null,ys),y1=Math.max.apply(null,ys);
-  if(y0===y1){y0-=1;y1+=1;}
-  function px(t){return pad+(x1===x0?0:(t-x0)/(x1-x0))*(W-pad-8);}
-  function py(v){return H-pad-(v-y0)/(y1-y0)*(H-pad-14);}
-  var pts=data.map(function(d,i){return px(xs[i]).toFixed(1)+','+py(ys[i]).toFixed(1);}).join(' ');
-  var g='<svg viewBox="0 0 '+W+' '+H+'" width="100%" style="max-width:'+W+'px;height:auto">';
-  g+='<line x1="'+pad+'" y1="'+(H-pad)+'" x2="'+(W-8)+'" y2="'+(H-pad)+'" stroke="#ddd"/>';
-  g+='<line x1="'+pad+'" y1="10" x2="'+pad+'" y2="'+(H-pad)+'" stroke="#ddd"/>';
-  g+='<polyline points="'+pts+'" fill="none" stroke="#0b6" stroke-width="2" stroke-linejoin="round"/>';
-  g+='<text x="'+(pad-4)+'" y="16" font-size="11" fill="#666" text-anchor="end">'+y1.toFixed(2)+'</text>';
-  g+='<text x="'+(pad-4)+'" y="'+(H-pad)+'" font-size="11" fill="#666" text-anchor="end">'+y0.toFixed(2)+'</text>';
-  g+='<text x="'+pad+'" y="'+(H-pad+16)+'" font-size="10" fill="#999">'+new Date(x0).toLocaleString()+'</text>';
-  g+='<text x="'+(W-8)+'" y="'+(H-pad+16)+'" font-size="10" fill="#999" text-anchor="end">'+new Date(x1).toLocaleString()+'</text>';
-  g+='<text x="'+(W/2)+'" y="'+(H-2)+'" font-size="11" fill="#333" text-anchor="middle">'+data.length+' points · latest '+ys[ys.length-1]+'</text>';
-  g+='</svg>';
-  return g;
+function closeGraph(){
+  document.getElementById('gmodal').style.display='none';
+  if(uplotInst){ uplotInst.destroy(); uplotInst=null; }
+}
+function markPeriod(){
+  var bs=document.querySelectorAll('#gperiods button');
+  for(var i=0;i<bs.length;i++){ bs[i].className=(parseFloat(bs[i].getAttribute('data-h'))===gHours)?'on':''; }
+}
+document.getElementById('gperiods').addEventListener('click',function(e){
+  if(e.target.tagName==='BUTTON'){ gHours=parseFloat(e.target.getAttribute('data-h')); markPeriod(); loadGraph(); }
+});
+function loadGraph(){
+  var chart=document.getElementById('gchart');
+  chart.innerHTML='<div style="padding:40px;color:#888">loading…</div>';
+  fetch('/api/metric?name='+encodeURIComponent(gMetric)+'&hours='+gHours,{cache:'no-store'})
+    .then(function(r){return r.json();})
+    .then(function(data){
+      if(uplotInst){ uplotInst.destroy(); uplotInst=null; }
+      chart.innerHTML='';
+      if(!data[0]||!data[0].length){ chart.innerHTML='<div style="padding:40px;color:#888">No data in this period yet — it fills in as data is collected (~1 point/min).</div>'; return; }
+      var w=Math.max(300,(chart.clientWidth||640));
+      var opts={ width:w, height:300, scales:{x:{time:true}},
+        series:[ {}, {label:gLabel, stroke:'#0b6', width:2, points:{show:data[0].length<80}} ],
+        cursor:{ drag:{x:true,y:false} } };
+      uplotInst=new uPlot(opts,data,chart);
+    })
+    .catch(function(e){ chart.innerHTML='<div style="padding:40px;color:#c0392b">error: '+e+'</div>'; });
 }
 tick(); setInterval(tick,5000);
 </script></body></html>"""
@@ -291,11 +303,25 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path.startswith("/api/build"):
                 self._send(200, BUILD, "text/plain")
             elif self.path.startswith("/api/metric"):
-                name = (parse_qs(urlparse(self.path).query).get("name") or [""])[0]
-                rows = q("SELECT ts,value FROM metrics WHERE name=? ORDER BY id", (name,))
-                step = max(1, len(rows) // 600)  # downsample to <=600 points
-                out = [[rows[i][0], rows[i][1]] for i in range(0, len(rows), step)]
-                self._send(200, json.dumps(out), "application/json")
+                qs = parse_qs(urlparse(self.path).query)
+                name = (qs.get("name") or [""])[0]
+                try:
+                    hours = float((qs.get("hours") or ["24"])[0])
+                except ValueError:
+                    hours = 24.0
+                cutoff = (datetime.datetime.now() - datetime.timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
+                rows = q("SELECT ts,value FROM metrics WHERE name=? AND ts>=? ORDER BY id", (name, cutoff))
+                step = max(1, len(rows) // 1500)  # downsample to <=1500 points
+                epoch0 = datetime.datetime(1970, 1, 1)
+                xs, ys = [], []
+                for i in range(0, len(rows), step):
+                    try:
+                        e = (datetime.datetime.strptime(rows[i][0][:19], "%Y-%m-%d %H:%M:%S") - epoch0).total_seconds()
+                    except ValueError:
+                        continue
+                    xs.append(e)
+                    ys.append(rows[i][1])
+                self._send(200, json.dumps([xs, ys]), "application/json")
             elif self.path.startswith("/api/latest"):
                 kv = {k: v for k, v in q("SELECT k,v FROM kv")}
                 rows = q("SELECT recv_ts,dev_time,lat,lon,speed_knots,course "
