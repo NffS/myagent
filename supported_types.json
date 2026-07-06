@@ -1,0 +1,27 @@
+{
+  "_comment": "Frame types for the Magic Systems Agent MS / Super Agent MS 3 (Car-Online) protocol, reverse-engineered 2026-07-06. carserver.py loads this to know which device->server types are handled; any type NOT listed under device_to_server is logged as UNSUPPORTED.",
+  "frame_format": "40 00 | len_LE16 | from_LE32 | to_LE32 | counter_LE16 | type_LE16 | datalen_LE32 | data  (20-byte header, len = 20 + datalen)",
+  "ids": { "device": "0x0000461c (from the login 'from' field)", "server": "0x00000000" },
+  "device_to_server": {
+    "0x0e00": { "name": "login",       "desc": "15-digit Device Number + 15-digit Password (ASCII, 30 bytes)", "handled": "identity; triggers handshake" },
+    "0x0110": { "name": "record",      "desc": "status record; record-id at data[4:8]; field@12(u16)*0.02 ~ backup-battery V (0.14-4.14), field@14(u16)*0.02 ~ main supply V (12.74/2.50)", "handled": "ACK 0x0115 echoing record-id" },
+    "0x0220": { "name": "gps",         "desc": "RMC-like ASCII: hhmmss.ss,A,ddmm.mmmmm,N,dddmm.mmmmm,E,speed_kn,course,ddmmyy,U12,hdop", "handled": "parsed -> position table" },
+    "0x0230": { "name": "cell",        "desc": "LBS text: MCC,MNC,LAC,CID-?,?", "handled": "stored -> kv.last_cell" },
+    "0x0209": { "name": "server_ip",   "desc": "configured server IP echo (ASCII)", "handled": "ignored" },
+    "0x0240": { "name": "telemetry_240","desc": "16-byte binary analog block (all-zero when no external sensors wired)", "handled": "stored raw -> telemetry" },
+    "0x0250": { "name": "telemetry_250","desc": "10-byte binary; u32@0 ~ device timestamp", "handled": "stored raw -> telemetry" },
+    "0x0260": { "name": "sim_balance", "desc": "SIM balance text, e.g. 'Na rahunku 379.0 grn'", "handled": "stored -> kv.sim_balance" },
+    "0x0270": { "name": "t270",        "desc": "3-byte; byte@2 continuous 19-75 (temperature / GSM-signal / battery-% candidate)", "handled": "stored raw -> telemetry" },
+    "0x0290": { "name": "t290",        "desc": "IMEI/ICCID + registration date (ASCII)", "handled": "stored raw -> telemetry" },
+    "0x0100": { "name": "t100",        "desc": "rfid-related record", "handled": "stored raw -> telemetry" },
+    "0x0302": { "name": "version",     "desc": "firmware version string, e.g. 'AgentMS3 ver.02.23d ...'", "handled": "stored -> kv.version" },
+    "0x0304": { "name": "devinfo",     "desc": "device:hw/sw info string", "handled": "stored -> kv.devinfo" },
+    "0x0400": { "name": "t400",        "desc": "empty keep-alive/marker", "handled": "ACK 0x0450" },
+    "0x0610": { "name": "t610",        "desc": "6-byte counter (odometer/uptime?)", "handled": "ACK 0x0600" }
+  },
+  "server_to_device": {
+    "0x0e01": "login ack 1", "0x0f01": "login ack 2", "0x0405": "login ack 3",
+    "0x0292": "time/session blob (8 bytes)", "0x0115": "record ack (echoes record-id at data[0:4])",
+    "0x0450": "ack for 0x0400", "0x0600": "ack for 0x0610"
+  }
+}
