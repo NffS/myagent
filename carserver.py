@@ -168,6 +168,9 @@ class CarServer:
             d = bytes.fromhex(r[0])
             if len(d) >= 3:
                 self._kv(cur, "temperature", d[2] - 256 if d[2] >= 128 else d[2])
+        r = cur.execute("SELECT v FROM kv WHERE k='last_cell'").fetchone()
+        if r:
+            self._cell_signal(cur, r[0])
         self.db.commit()
 
     def log(self, msg):
@@ -181,6 +184,21 @@ class CarServer:
         cur.execute("INSERT INTO kv(k,v,updated) VALUES(?,?,?) "
                     "ON CONFLICT(k) DO UPDATE SET v=excluded.v, updated=excluded.updated",
                     (k, str(v), now()))
+
+    def _cell_signal(self, cur, txt):
+        """0x0230 LBS 'MCC,MNC,LAC,CID-N,99': the -N suffix is a per-cell CSQ (0-31).
+        Fit vs the Car-Online app (serving-cell N~=20 shown as "65 dBm") gives real
+        RSSI = -105 + 2N; the app prints |RSSI| = 105 - 2N, which we reproduce here.
+        (Trailing ",99" is the AT+CSQ "unknown" sentinel, always 99, unusable.)"""
+        try:
+            parts = txt.strip().split(",")
+            if len(parts) >= 4 and "-" in parts[3]:
+                n = int(parts[3].rpartition("-")[2])
+                if 0 <= n <= 31:
+                    self._kv(cur, "signal_csq", n)
+                    self._kv(cur, "signal_dbm", 105 - 2 * n)
+        except (ValueError, IndexError):
+            pass
 
     def store(self, f):
         typ = f["typ"]
@@ -208,6 +226,7 @@ class CarServer:
                         self._kv(cur, "hdop", g["hdop"])
             elif typ == 0x0230:
                 self._kv(cur, "last_cell", txt)
+                self._cell_signal(cur, txt)
             elif typ == 0x0260:
                 self._kv(cur, "sim_balance", txt)
             elif typ == 0x0302:
