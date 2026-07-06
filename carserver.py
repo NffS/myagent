@@ -160,9 +160,13 @@ class CarServer:
         if r:
             d = bytes.fromhex(r[0])
             if len(d) >= 16:
-                self._kv(cur, "main_voltage", round((d[14] | (d[15] << 8)) * 0.019388, 2))
+                d8 = d[8] | (d[9] << 8); d10 = d[10] | (d[11] << 8)
                 self._kv(cur, "pin_voltage", round((d[12] | (d[13] << 8)) * 0.02857, 2))
-                self._kv(cur, "status_word", "%04x %04x" % (d[8] | (d[9] << 8), d[10] | (d[11] << 8)))
+                self._kv(cur, "backup_voltage", round(d[14] * 0.03176, 2))
+                self._kv(cur, "status_word", "%04x %04x" % (d8, d10))
+                self._kv(cur, "armed", "armed" if (d8 & 0x0200) else "disarmed")
+                self._kv(cur, "ignition", "on" if (d10 & 0x2000) else "off")
+                self._kv(cur, "moving", "yes" if (d10 & 0x0010) else "no")
         r = cur.execute("SELECT hex FROM telemetry WHERE type='0x0270' ORDER BY id DESC LIMIT 1").fetchone()
         if r:
             d = bytes.fromhex(r[0])
@@ -172,7 +176,7 @@ class CarServer:
         if r:
             d = bytes.fromhex(r[0])
             if len(d) >= 2:
-                self._kv(cur, "backup_voltage", round(d[1] * 0.042234, 2))
+                self._kv(cur, "main_voltage", round(d[1] * 0.13138, 2))
         r = cur.execute("SELECT v FROM kv WHERE k='last_cell'").fetchone()
         if r:
             self._cell_signal(cur, r[0])
@@ -251,26 +255,33 @@ class CarServer:
                 # NOTE: the old "backup=data[8:10]*0.007754" was WRONG -- that field is a
                 # status bitfield (it flips on valet toggle), so backup V is not sourced here.
                 if typ == 0x0110 and len(data) >= 16:
-                    sa = data[8] | (data[9] << 8)
-                    sb = data[10] | (data[11] << 8)
-                    pin = data[12] | (data[13] << 8)
-                    mn = data[14] | (data[15] << 8)
-                    self._kv(cur, "main_raw", mn)
-                    self._kv(cur, "pin_raw", pin)
-                    self._kv(cur, "status_word", "%04x %04x" % (sa, sb))
-                    self._kv(cur, "main_voltage", round(mn * 0.019388, 2))
-                    self._kv(cur, "pin_voltage", round(pin * 0.02857, 2))
+                    d8 = data[8] | (data[9] << 8)
+                    d10 = data[10] | (data[11] << 8)
+                    tag = data[12] | (data[13] << 8)
+                    self._kv(cur, "status_word", "%04x %04x" % (d8, d10))
+                    self._kv(cur, "pin_raw", tag)
+                    self._kv(cur, "pin_voltage", round(tag * 0.02857, 2))
+                    # data[14] = 125 (constant) -> internal BACKUP battery, stable ~3.97V.
+                    # (MAIN supply is NOT here -- it's 0x0250 byte1, which rises with the
+                    # alternator; data[14:16] high byte is just a parked/ignition flag.)
+                    self._kv(cur, "backup_voltage", round(data[14] * 0.03176, 2))
+                    # status bits (verified vs ground truth: parked=armed/ign-off 0200/0003,
+                    # driving=disarmed/ign-on 0408/2013): armed=d8&0x0200, ign=d10&0x2000,
+                    # moving=d10&0x0010.
+                    self._kv(cur, "armed", "armed" if (d8 & 0x0200) else "disarmed")
+                    self._kv(cur, "ignition", "on" if (d10 & 0x2000) else "off")
+                    self._kv(cur, "moving", "yes" if (d10 & 0x0010) else "no")
                 elif typ == 0x0270 and len(data) >= 3:
                     t = data[2] - 256 if data[2] >= 128 else data[2]
                     self._kv(cur, "temp_raw", data[2])
                     self._kv(cur, "temperature", t)
                 elif typ == 0x0250 and len(data) >= 2:
-                    # data[1] = internal backup (Li-ion) battery: byte 94 -> 3.97V
-                    # (calibrated vs app). Session range 79-110 -> 3.3-4.65V, a
-                    # textbook Li-ion span; updates slowly (~every few min, value
-                    # near-constant). data[0] is a fast counter; data[2:4] constant.
-                    self._kv(cur, "backup_raw", data[1])
-                    self._kv(cur, "backup_voltage", round(data[1] * 0.042234, 2))
+                    # data[1] = MAIN supply voltage. It RISES when the engine runs
+                    # (alternator): 94 -> 12.35V parked (calib vs app), ~99-102 -> ~13V
+                    # driving; session range 79-110 -> 10.4-14.5V (textbook car range).
+                    # data[0] is a fast counter; data[2:4] constant.
+                    self._kv(cur, "main_raw", data[1])
+                    self._kv(cur, "main_voltage", round(data[1] * 0.13138, 2))
             self.db.commit()
 
     def log_unsupported(self, f, peer):
@@ -321,9 +332,11 @@ class CarServer:
                 return "gps %.5f,%.5f %.0fkn%s" % (g["lat"], g["lon"], g["speed_knots"],
                                                    " %dsat" % g["sats"] if g["sats"] is not None else "")
             if typ == 0x0110 and len(d) >= 16:
-                return "rec main=%.2fV tag=%.2fV st=%04x/%04x" % (
-                    (d[14] | (d[15] << 8)) * 0.019388, (d[12] | (d[13] << 8)) * 0.02857,
-                    d[8] | (d[9] << 8), d[10] | (d[11] << 8))
+                d8 = d[8] | (d[9] << 8); d10 = d[10] | (d[11] << 8)
+                return "rec bk=%.2fV tag=%.2fV %s ign=%s%s" % (
+                    d[14] * 0.03176, (d[12] | (d[13] << 8)) * 0.02857,
+                    "ARMED" if (d8 & 0x0200) else "disarmed", "on" if (d10 & 0x2000) else "off",
+                    " moving" if (d10 & 0x0010) else "")
             if typ == 0x0230:
                 return "cell %s" % d.decode("ascii", "replace")[:24]
             if typ == 0x0260:
@@ -331,7 +344,7 @@ class CarServer:
             if typ == 0x0270 and len(d) >= 3:
                 return "temp %dC" % (d[2] - 256 if d[2] >= 128 else d[2])
             if typ == 0x0250 and len(d) >= 2:
-                return "backup %.2fV" % (d[1] * 0.042234)
+                return "main %.2fV" % (d[1] * 0.13138)
             if typ == 0x0302:
                 return "ver %s" % d.decode("ascii", "replace")[:24]
             if typ == 0x0e00:

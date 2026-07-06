@@ -61,10 +61,10 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  /* bottom address / armed bar */
  #bottom{padding:9px 16px;background:#fff;border-top:1px solid #e3e3e3;
          display:flex;align-items:center;gap:12px}
- #armed{font-weight:700;padding:3px 10px;border-radius:14px;font-size:13px;white-space:nowrap}
- #armed.on{background:#e7f6ec;color:#1c8a4e} #armed.off{background:#fdeaea;color:#c0392b}
- #armed.unk{background:#eee;color:#888}
- #armed svg{width:15px;height:15px;vertical-align:-3px;margin-right:3px}
+ #armed,#ign{font-weight:700;padding:3px 10px;border-radius:14px;font-size:13px;white-space:nowrap}
+ #armed.on,#ign.on{background:#e7f6ec;color:#1c8a4e} #armed.off{background:#fdeaea;color:#c0392b}
+ #armed.unk,#ign.unk,#ign.off{background:#eee;color:#888}
+ #armed svg,#ign svg{width:15px;height:15px;vertical-align:-3px;margin-right:3px}
  #addrwrap{flex:1 1 auto;min-width:0}
  #addr{font-size:13.5px;line-height:1.25} #evt{font-size:12px;color:#888}
  /* journal */
@@ -83,6 +83,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <div id="map"></div>
 <div id="bottom">
   <span id="armed" class="unk">—</span>
+  <span id="ign" class="unk">—</span>
   <div id="addrwrap"><div id="addr">locating…</div><div id="evt"></div></div>
 </div>
 <div id="jhdr">Journal — <span style="color:#1c8a4e">device→</span> / <span style="color:#2a6fd6">←server</span></div>
@@ -106,7 +107,8 @@ var ICONS={
  backup:S+'<rect x="3" y="9" width="16" height="9" rx="1.5"/><path d="M21 12v3"/><rect x="5.2" y="11" width="8" height="5" rx=".6" fill="currentColor" stroke="none"/></svg>',
  pin:S+'<circle cx="8.5" cy="8.5" r="4.5"/><path d="M11.7 11.7l6.3 6.3M15.5 15.5l2-2M18 18l2-2"/></svg>',
  lock:S+'<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
- unlock:S+'<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.5-1.8"/></svg>'
+ unlock:S+'<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.5-1.8"/></svg>',
+ key:S+'<circle cx="12" cy="13.5" r="6.5"/><path d="M12 2.5V9"/></svg>'
 };
 function chip(icon,val,unit,label){
   if(val==null||val===undefined||val==='') return '';
@@ -147,6 +149,10 @@ async function tick(){
   if(av.indexOf('arm')>=0 && av.indexOf('dis')<0){ a.innerHTML=ICONS.lock+'Armed'; a.className='on'; }
   else if(av.indexOf('dis')>=0 || av==='off'){ a.innerHTML=ICONS.unlock+'Disarmed'; a.className='off'; }
   else { a.innerHTML=ICONS.lock+'—'; a.className='unk'; }
+  var ig=document.getElementById('ign'), iv=(kv.ignition||'').toLowerCase();
+  if(iv==='on'){ ig.innerHTML=ICONS.key+'Ignition on'; ig.className='on'; }
+  else if(iv==='off'){ ig.innerHTML=ICONS.key+'Ignition off'; ig.className='off'; }
+  else { ig.innerHTML=ICONS.key+'—'; ig.className='unk'; }
   document.getElementById('evt').textContent =
     (p?('fix '+localTime(p.dev_time||p.recv_ts)):'waiting for data')+
     (kv.speed_kmh!=null?'  ·  '+kv.speed_kmh+' km/h':'')+
