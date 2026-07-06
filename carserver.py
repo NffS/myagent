@@ -179,6 +179,20 @@ class CarServer:
             elif typ in (0x0110, 0x0240, 0x0250, 0x0270, 0x0290, 0x0100, 0x0610):
                 cur.execute("INSERT INTO telemetry(recv_ts,type,hex) VALUES(?,?,?)",
                             (now(), "0x%04x" % typ, data.hex()))
+                # 0x0110 record carries the voltages; 0x0270 carries temperature.
+                # scales calibrated 2026-07-06 against the Car-Online app
+                # (main 637->12.27V, backup 98->3.97V, temp byte->51C).
+                if typ == 0x0110 and len(data) >= 16:
+                    bkp = data[12] | (data[13] << 8)
+                    mn = data[14] | (data[15] << 8)
+                    self._kv(cur, "main_raw", mn)
+                    self._kv(cur, "backup_raw", bkp)
+                    self._kv(cur, "main_voltage", round(mn * 0.01926, 2))
+                    self._kv(cur, "backup_voltage", round(bkp * 0.04051, 2))
+                elif typ == 0x0270 and len(data) >= 3:
+                    t = data[2] - 256 if data[2] >= 128 else data[2]
+                    self._kv(cur, "temp_raw", data[2])
+                    self._kv(cur, "temperature", t)
             self.db.commit()
 
     def log_unsupported(self, f, peer):
