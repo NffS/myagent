@@ -69,7 +69,7 @@ async function tick(){
     row('Position', p? (p.lat.toFixed(6)+', '+p.lon.toFixed(6)):null, true)+
     row('Speed', d.speed_kmh!=null? d.speed_kmh+' km/h':null, true)+
     row('Main voltage', kv.main_voltage? kv.main_voltage+' V':null, true)+
-    row('Backup battery', kv.backup_voltage? kv.backup_voltage+' V':null)+
+    row('Pin voltage', kv.pin_voltage? kv.pin_voltage+' V':null, true)+
     row('Temperature', kv.temperature!=null&&kv.temperature!==undefined? kv.temperature+' °C':null)+
     row('Last fix', p?localTime(p.dev_time):null)+
     row('Received', p?localTime(p.recv_ts):null)+

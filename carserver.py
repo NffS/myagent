@@ -149,7 +149,7 @@ class CarServer:
             d = bytes.fromhex(r[0])
             if len(d) >= 16:
                 self._kv(cur, "main_voltage", round((d[14] | (d[15] << 8)) * 0.01926, 2))
-                self._kv(cur, "backup_voltage", round((d[12] | (d[13] << 8)) * 0.04051, 2))
+                self._kv(cur, "pin_voltage", round((d[12] | (d[13] << 8)) * 0.02857, 2))
         r = cur.execute("SELECT hex FROM telemetry WHERE type='0x0270' ORDER BY id DESC LIMIT 1").fetchone()
         if r:
             d = bytes.fromhex(r[0])
@@ -204,12 +204,12 @@ class CarServer:
                 # scales calibrated 2026-07-06 against the Car-Online app
                 # (main 637->12.27V, backup 98->3.97V, temp byte->51C).
                 if typ == 0x0110 and len(data) >= 16:
-                    bkp = data[12] | (data[13] << 8)
+                    pin = data[12] | (data[13] << 8)
                     mn = data[14] | (data[15] << 8)
                     self._kv(cur, "main_raw", mn)
-                    self._kv(cur, "backup_raw", bkp)
+                    self._kv(cur, "pin_raw", pin)
                     self._kv(cur, "main_voltage", round(mn * 0.01926, 2))
-                    self._kv(cur, "backup_voltage", round(bkp * 0.04051, 2))
+                    self._kv(cur, "pin_voltage", round(pin * 0.02857, 2))
                 elif typ == 0x0270 and len(data) >= 3:
                     t = data[2] - 256 if data[2] >= 128 else data[2]
                     self._kv(cur, "temp_raw", data[2])
