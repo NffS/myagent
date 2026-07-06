@@ -38,7 +38,7 @@ def q(sql, args=()):
 
 
 PAGE = """<!doctype html><html><head><meta charset="utf-8">
-<title>AgentMS3 tracker</title>
+<title>Fiesta tracker</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -53,7 +53,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #top .brand{font-weight:700;margin-right:8px;display:flex;flex-direction:column;line-height:1.1}
  #top .brand small{font-weight:400;color:#3aa76d;font-size:11px}
  .chip{display:flex;flex-direction:column;align-items:center;min-width:52px}
- .chip .ic{font-size:17px;line-height:1}
+ .chip .ic{line-height:0}
+ .chip .ic svg{width:22px;height:22px;display:block;color:#3a3a3c}
  .chip .cv{font-weight:600;font-size:14px;margin-top:2px;white-space:nowrap}
  .chip .cl{font-size:9.5px;color:#9a9a9a;text-transform:uppercase;letter-spacing:.3px}
  #map{flex:1 1 auto;width:100%;min-height:200px}
@@ -63,6 +64,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #armed{font-weight:700;padding:3px 10px;border-radius:14px;font-size:13px;white-space:nowrap}
  #armed.on{background:#e7f6ec;color:#1c8a4e} #armed.off{background:#fdeaea;color:#c0392b}
  #armed.unk{background:#eee;color:#888}
+ #armed svg{width:15px;height:15px;vertical-align:-3px;margin-right:3px}
  #addrwrap{flex:1 1 auto;min-width:0}
  #addr{font-size:13.5px;line-height:1.25} #evt{font-size:12px;color:#888}
  /* journal */
@@ -76,7 +78,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  .jd.dev{color:#1c8a4e} .jd.srv{color:#2a6fd6}
 </style></head><body>
 <div id="top">
-  <div class="brand">AgentMS3<small id="online">connecting…</small></div>
+  <div class="brand">Fiesta<small id="online">connecting…</small></div>
 </div>
 <div id="map"></div>
 <div id="bottom">
@@ -93,6 +95,19 @@ var TZ=Intl.DateTimeFormat().resolvedOptions().timeZone||'local';
 function localTime(s){ if(!s) return '-'; var d=new Date(String(s).replace(' ','T')+'Z'); return isNaN(d.getTime())?s:d.toLocaleString(); }
 function timeOnly(s){ if(!s) return ''; var d=new Date(String(s).replace(' ','T')+'Z'); return isNaN(d.getTime())?s:d.toLocaleTimeString(); }
 function num(s){ var m=String(s==null?'':s).match(/-?[\\d.]+/); return m?m[0]:null; }
+// inline line-art pictograms (stroke = currentColor) — no emoji
+var S='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">';
+var ICONS={
+ main:S+'<rect x="2" y="8" width="20" height="11" rx="1.5"/><path d="M6 8V5.5M18 8V5.5M6.5 13.5h3M14.5 13.5h3M16 12v3"/></svg>',
+ temp:S+'<path d="M14 14.5V5a2 2 0 1 0-4 0v9.5a4 4 0 1 0 4 0z"/><path d="M12 9.5v5.5"/></svg>',
+ money:S+'<circle cx="12" cy="12" r="8.5"/><path d="M12 7.4v9.2M9.6 10h4.8M9.6 13.6h4.8"/></svg>',
+ signal:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 18v-3M10 18v-6M15 18v-9M20 18v-12"/></svg>',
+ sat:S+'<circle cx="12" cy="12" r="2.6"/><path d="M12 3a9 9 0 0 1 9 9M12 21a9 9 0 0 1-9-9M15 12a3 3 0 0 0-3-3"/></svg>',
+ backup:S+'<rect x="3" y="9" width="16" height="9" rx="1.5"/><path d="M21 12v3"/><rect x="5.2" y="11" width="8" height="5" rx=".6" fill="currentColor" stroke="none"/></svg>',
+ pin:S+'<circle cx="8.5" cy="8.5" r="4.5"/><path d="M11.7 11.7l6.3 6.3M15.5 15.5l2-2M18 18l2-2"/></svg>',
+ lock:S+'<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
+ unlock:S+'<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.5-1.8"/></svg>'
+};
 function chip(icon,val,unit,label){
   if(val==null||val===undefined||val==='') return '';
   return '<div class="chip"><span class="ic">'+icon+'</span><span class="cv">'+val+(unit||'')+
@@ -120,18 +135,18 @@ async function tick(){
   var top=document.getElementById('top');
   top.querySelectorAll('.chip').forEach(function(n){n.remove();});
   top.insertAdjacentHTML('beforeend',
-    chip('🔋', kv.main_voltage, ' V', 'main')+
-    chip('🌡️', kv.temperature, ' °C', 'temp')+
-    chip('💰', num(kv.sim_balance), '', 'balance')+
-    chip('📶', kv.signal, ' dBm', 'signal')+
-    chip('🛰️', kv.satellites, '', 'sats')+
-    chip('🪫', kv.backup_voltage, ' V', 'backup')+
-    chip('🏷️', kv.pin_voltage, ' V', 'pin'));
+    chip(ICONS.main, kv.main_voltage, ' V', 'main')+
+    chip(ICONS.temp, kv.temperature, ' °C', 'temp')+
+    chip(ICONS.money, num(kv.sim_balance), '', 'balance')+
+    chip(ICONS.signal, kv.signal_dbm, ' dBm', 'signal')+
+    chip(ICONS.sat, kv.satellites, '', 'sats')+
+    chip(ICONS.backup, kv.backup_voltage, ' V', 'backup')+
+    chip(ICONS.pin, kv.pin_voltage, ' V', 'pin'));
   // armed state (decoded into kv.armed when available)
   var a=document.getElementById('armed'), av=(kv.armed||'').toLowerCase();
-  if(av.indexOf('arm')>=0 && av.indexOf('dis')<0){ a.textContent='🔒 Armed'; a.className='on'; }
-  else if(av.indexOf('dis')>=0 || av==='off'){ a.textContent='🔓 Disarmed'; a.className='off'; }
-  else { a.textContent='🔒 —'; a.className='unk'; }
+  if(av.indexOf('arm')>=0 && av.indexOf('dis')<0){ a.innerHTML=ICONS.lock+'Armed'; a.className='on'; }
+  else if(av.indexOf('dis')>=0 || av==='off'){ a.innerHTML=ICONS.unlock+'Disarmed'; a.className='off'; }
+  else { a.innerHTML=ICONS.lock+'—'; a.className='unk'; }
   document.getElementById('evt').textContent =
     (p?('fix '+localTime(p.dev_time||p.recv_ts)):'waiting for data')+
     (kv.speed_kmh!=null?'  ·  '+kv.speed_kmh+' km/h':'')+
@@ -173,7 +188,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self._authed():
             self.send_response(401)
-            self.send_header("WWW-Authenticate", 'Basic realm="AgentMS3 tracker"')
+            self.send_header("WWW-Authenticate", 'Basic realm="Fiesta tracker"')
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
