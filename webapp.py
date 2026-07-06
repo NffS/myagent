@@ -22,11 +22,17 @@ Routes:
 import argparse
 import base64
 import json
+import os
 import sqlite3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DB = "/root/captures/car.db"
 AUTH = None  # expected "Basic <base64(user:pass)>" header, or None to disable
+# build id = this file's mtime; changes on every deploy so open pages auto-reload
+try:
+    BUILD = str(int(os.path.getmtime(os.path.abspath(__file__))))
+except OSError:
+    BUILD = "0"
 
 
 def q(sql, args=()):
@@ -40,6 +46,8 @@ def q(sql, args=()):
 PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <title>Fiesta tracker</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache"><meta http-equiv="Expires" content="0">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
@@ -92,6 +100,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <div id="jhdr">Journal — <span style="color:#1c8a4e">device→</span> / <span style="color:#2a6fd6">←server</span></div>
 <div id="jwrap"><div id="jlist"></div></div>
 <script>
+var BUILD='__BUILD__';
 var map=L.map('map').setView([0,0],2), marker=null, trackLayer=null, centered=false;
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
   {maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
@@ -147,6 +156,7 @@ async function geocode(lat,lon){
 }
 async function tick(){
  try{
+  try{ var bld=(await (await fetch('/api/build',{cache:'no-store'})).text()).trim(); if(bld&&bld!==BUILD){ location.reload(); return; } }catch(e){}
   var d=await (await fetch('/api/latest',{cache:'no-store'})).json();
   var p=d.position, kv=d.kv||{};
   var stale = kv.last_seen ? (Date.now()-new Date(kv.last_seen.replace(' ','T')+'Z').getTime())>120000 : true;
@@ -228,7 +238,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             if self.path == "/" or self.path.startswith("/?") or self.path.startswith("/index"):
-                self._send(200, PAGE, "text/html; charset=utf-8")
+                self._send(200, PAGE.replace("__BUILD__", BUILD), "text/html; charset=utf-8")
+            elif self.path.startswith("/api/build"):
+                self._send(200, BUILD, "text/plain")
             elif self.path.startswith("/api/latest"):
                 kv = {k: v for k, v in q("SELECT k,v FROM kv")}
                 rows = q("SELECT recv_ts,dev_time,lat,lon,speed_knots,course "
