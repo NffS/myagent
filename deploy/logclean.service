@@ -1,0 +1,6 @@
+[Unit]
+Description=Fiesta tracker log rotation (keep < 1 month, total logs <= 10 GB)
+
+[Service]
+Type=oneshot
+ExecStart=/root/logclean.sh
