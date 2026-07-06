@@ -162,7 +162,7 @@ class CarServer:
             if len(d) >= 16:
                 self._kv(cur, "main_voltage", round((d[14] | (d[15] << 8)) * 0.019388, 2))
                 self._kv(cur, "pin_voltage", round((d[12] | (d[13] << 8)) * 0.02857, 2))
-                self._kv(cur, "backup_voltage", round((d[8] | (d[9] << 8)) * 0.007754, 2))
+                self._kv(cur, "status_word", "%04x %04x" % (d[8] | (d[9] << 8), d[10] | (d[11] << 8)))
         r = cur.execute("SELECT hex FROM telemetry WHERE type='0x0270' ORDER BY id DESC LIMIT 1").fetchone()
         if r:
             d = bytes.fromhex(r[0])
@@ -217,21 +217,24 @@ class CarServer:
             elif typ in (0x0110, 0x0240, 0x0250, 0x0270, 0x0290, 0x0100, 0x0610):
                 cur.execute("INSERT INTO telemetry(recv_ts,type,hex) VALUES(?,?,?)",
                             (now(), "0x%04x" % typ, data.hex()))
-                # 0x0110 record carries the voltages; 0x0270 carries temperature.
-                # single-point scales calibrated 2026-07-06 vs the Car-Online app:
-                #   main  = data[14:16] (637 -> 12.35V)
-                #   backup= data[8:10]  (512 -> 3.97V)   [stable full-battery reading]
-                #   pin   = data[12:14] (98  -> 2.80V)   [varying tag/analog input]
+                # 0x0110 record layout (after counter(4)+recordid(4)):
+                #   data[8:10]  = status word A (base 0x0200) -- BITFIELD, not a voltage
+                #   data[10:12] = status word B (base 0x0003; bit 0x4000 seen set on a
+                #                 valet/mode toggle 2026-07-06) -- BITFIELD, not a voltage
+                #   data[12:14] = pin/tag analog input (varies), *0.02857 -> V
+                #   data[14:16] = main supply (637 const) *0.019388 -> 12.35V
+                # NOTE: the old "backup=data[8:10]*0.007754" was WRONG -- that field is a
+                # status bitfield (it flips on valet toggle), so backup V is not sourced here.
                 if typ == 0x0110 and len(data) >= 16:
-                    bkp = data[8] | (data[9] << 8)
+                    sa = data[8] | (data[9] << 8)
+                    sb = data[10] | (data[11] << 8)
                     pin = data[12] | (data[13] << 8)
                     mn = data[14] | (data[15] << 8)
                     self._kv(cur, "main_raw", mn)
                     self._kv(cur, "pin_raw", pin)
-                    self._kv(cur, "backup_raw", bkp)
+                    self._kv(cur, "status_word", "%04x %04x" % (sa, sb))
                     self._kv(cur, "main_voltage", round(mn * 0.019388, 2))
                     self._kv(cur, "pin_voltage", round(pin * 0.02857, 2))
-                    self._kv(cur, "backup_voltage", round(bkp * 0.007754, 2))
                 elif typ == 0x0270 and len(data) >= 3:
                     t = data[2] - 256 if data[2] >= 128 else data[2]
                     self._kv(cur, "temp_raw", data[2])
@@ -286,9 +289,9 @@ class CarServer:
                 return "gps %.5f,%.5f %.0fkn%s" % (g["lat"], g["lon"], g["speed_knots"],
                                                    " %dsat" % g["sats"] if g["sats"] is not None else "")
             if typ == 0x0110 and len(d) >= 16:
-                return "rec main=%.2fV bk=%.2fV pin=%.2fV" % ((d[14] | (d[15] << 8)) * 0.019388,
-                                                              (d[8] | (d[9] << 8)) * 0.007754,
-                                                              (d[12] | (d[13] << 8)) * 0.02857)
+                return "rec main=%.2fV pin=%.2fV st=%04x/%04x" % (
+                    (d[14] | (d[15] << 8)) * 0.019388, (d[12] | (d[13] << 8)) * 0.02857,
+                    d[8] | (d[9] << 8), d[10] | (d[11] << 8))
             if typ == 0x0230:
                 return "cell %s" % d.decode("ascii", "replace")[:24]
             if typ == 0x0260:
