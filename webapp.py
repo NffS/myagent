@@ -129,7 +129,7 @@ async function tick(){
   var d=await (await fetch('/api/latest',{cache:'no-store'})).json();
   var p=d.position, kv=d.kv||{};
   var stale = kv.last_seen ? (Date.now()-new Date(kv.last_seen.replace(' ','T')+'Z').getTime())>120000 : true;
-  document.getElementById('online').textContent=(stale?'offline':'online')+' · '+TZ;
+  document.getElementById('online').textContent=(stale?'offline':'online');
   document.getElementById('online').style.color=stale?'#c0392b':'#3aa76d';
   // rebuild pictogram bar
   var top=document.getElementById('top');
@@ -141,7 +141,7 @@ async function tick(){
     chip(ICONS.signal, kv.signal_dbm, ' dBm', 'signal')+
     chip(ICONS.sat, kv.satellites, '', 'sats')+
     chip(ICONS.backup, kv.backup_voltage, ' V', 'backup')+
-    chip(ICONS.pin, kv.pin_voltage, ' V', 'pin'));
+    chip(ICONS.pin, kv.pin_voltage, ' V', 'tag'));
   // armed state (decoded into kv.armed when available)
   var a=document.getElementById('armed'), av=(kv.armed||'').toLowerCase();
   if(av.indexOf('arm')>=0 && av.indexOf('dis')<0){ a.innerHTML=ICONS.lock+'Armed'; a.className='on'; }
