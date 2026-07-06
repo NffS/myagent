@@ -186,17 +186,18 @@ class CarServer:
                     (k, str(v), now()))
 
     def _cell_signal(self, cur, txt):
-        """0x0230 LBS 'MCC,MNC,LAC,CID-N,99': the -N suffix is a per-cell CSQ (0-31).
-        Fit vs the Car-Online app (serving-cell N~=20 shown as "65 dBm") gives real
-        RSSI = -105 + 2N; the app prints |RSSI| = 105 - 2N, which we reproduce here.
-        (Trailing ",99" is the AT+CSQ "unknown" sentinel, always 99, unusable.)"""
+        """0x0230 LBS 'MCC,MNC,LAC,CID-N,99': the -N suffix is a per-cell signal index.
+        Its mapping to the Car-Online app's displayed dBm is non-standard; calibrated
+        to two paired app readings (N=18 -> 65, N=21 -> 47) => dBm ~= 173 - 6N. This is
+        a device-only APPROXIMATION (the app's exact value is vendor-computed and not
+        transmitted). Trailing ",99" is the AT+CSQ "unknown" sentinel."""
         try:
             parts = txt.strip().split(",")
             if len(parts) >= 4 and "-" in parts[3]:
                 n = int(parts[3].rpartition("-")[2])
                 if 0 <= n <= 31:
                     self._kv(cur, "signal_csq", n)
-                    self._kv(cur, "signal_dbm", 105 - 2 * n)
+                    self._kv(cur, "signal_dbm", max(1, min(113, 173 - 6 * n)))
         except (ValueError, IndexError):
             pass
 
