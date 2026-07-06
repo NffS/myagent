@@ -29,6 +29,19 @@ while [ "$(total)" -gt "$FILE_MAXBYTES" ]; do
     rm -f "$oldest"
 done
 
+# 2b) DB retention: keep only the last 90 days of time-series data in car.db
+python3 - <<'PY' 2>&1 | sed 's/^/  db: /'
+import sqlite3, datetime
+d = sqlite3.connect('/root/captures/car.db', timeout=15)
+cut = (datetime.datetime.now() - datetime.timedelta(days=90)).strftime('%Y-%m-%d %H:%M:%S')
+for t, c in (('metrics', 'ts'), ('position', 'recv_ts'), ('telemetry', 'recv_ts')):
+    try:
+        n = d.execute('DELETE FROM %s WHERE %s < ?' % (t, c), (cut,)).rowcount
+        d.commit(); print('%s: purged %d rows older than 90d' % (t, n))
+    except Exception as e:
+        print('%s: %s' % (t, e))
+PY
+
 # 3) JOURNALD: cap the systemd journal to one month / 2 GB
 journalctl --vacuum-time=1month --vacuum-size=2G 2>&1 | sed 's/^/  journald: /'
 

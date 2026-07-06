@@ -30,6 +30,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import socket
 import sqlite3
 import struct
@@ -140,10 +141,14 @@ class CarServer:
         self.db.execute("CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT, updated TEXT)")
         self.db.execute("CREATE TABLE IF NOT EXISTS journal(id INTEGER PRIMARY KEY,"
                         "ts TEXT, dir TEXT, summary TEXT)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS metrics(id INTEGER PRIMARY KEY,"
+                        "ts TEXT, name TEXT, value REAL)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS ix_metrics ON metrics(name, id)")
         self.db.commit()
         self._jn = 0
         self._jlast = {}
         self._sigN = []
+        self._metric_last = 0
         self.dblock = threading.Lock()
         self._trace_last = {}
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -151,6 +156,8 @@ class CarServer:
         self.logfh = open(os.path.join(capdir, "carserver_%s.log" % ts), "a", encoding="utf-8")
         self.unsupfh = open(os.path.join(capdir, "unsupported_%s.jsonl" % ts), "a", encoding="utf-8")
         self.backfill()
+        self.backfill_metrics()
+        self.purge_old()
 
     def backfill(self):
         """On startup, seed kv voltage/temperature from the most recent stored
@@ -181,6 +188,70 @@ class CarServer:
         r = cur.execute("SELECT v FROM kv WHERE k='last_cell'").fetchone()
         if r:
             self._cell_signal(cur, r[0])
+        self.db.commit()
+
+    # dashboard-graph metrics: (metric name in `metrics` table, kv key it comes from)
+    METRIC_KEYS = (("main_voltage", "main_voltage"), ("temperature", "temperature"),
+                   ("balance", "sim_balance"), ("signal_dbm", "signal_dbm"),
+                   ("satellites", "satellites"), ("backup_voltage", "backup_voltage"),
+                   ("tag_voltage", "pin_voltage"))
+
+    @staticmethod
+    def _num(v):
+        if v is None:
+            return None
+        m = re.search(r"-?\d+(?:\.\d+)?", str(v))
+        return float(m.group()) if m else None
+
+    def _snapshot_metrics(self, cur):
+        """Every 60s, append each metric's current numeric value to the time-series
+        `metrics` table so the dashboard can graph it."""
+        t = time.time()
+        if t - self._metric_last < 60:
+            return
+        self._metric_last = t
+        kv = {k: v for k, v in cur.execute("SELECT k,v FROM kv")}
+        ts = now()
+        for name, key in self.METRIC_KEYS:
+            v = self._num(kv.get(key))
+            if v is not None:
+                cur.execute("INSERT INTO metrics(ts,name,value) VALUES(?,?,?)", (ts, name, v))
+
+    def backfill_metrics(self):
+        """Seed the metrics table from stored telemetry (main/backup/tag/temp have raw
+        history), sampled ~1/min, only for rows newer than what's already stored."""
+        cur = self.db.cursor()
+        jobs = (
+            ("main_voltage", "0x0250", lambda d: round(d[1] * 0.13138, 2) if len(d) >= 2 else None),
+            ("backup_voltage", "0x0110", lambda d: round(d[14] * 0.03176, 2) if len(d) >= 16 else None),
+            ("tag_voltage", "0x0110", lambda d: round((d[12] | (d[13] << 8)) * 0.02857, 2) if len(d) >= 16 else None),
+            ("temperature", "0x0270", lambda d: (d[2] - 256 if d[2] >= 128 else d[2]) if len(d) >= 3 else None),
+        )
+        for name, typ, fn in jobs:
+            last = cur.execute("SELECT MAX(ts) FROM metrics WHERE name=?", (name,)).fetchone()[0] or ""
+            rows = cur.execute("SELECT recv_ts,hex FROM telemetry WHERE type=? AND recv_ts>? ORDER BY id",
+                               (typ, last)).fetchall()
+            ins, lastmin = [], None
+            for ts, hx in rows:
+                if ts[:16] == lastmin:
+                    continue
+                lastmin = ts[:16]
+                try:
+                    v = fn(bytes.fromhex(hx))
+                except Exception:
+                    v = None
+                if v is not None:
+                    ins.append((ts, name, v))
+            if ins:
+                cur.executemany("INSERT INTO metrics(ts,name,value) VALUES(?,?,?)", ins)
+        self.db.commit()
+
+    def purge_old(self, days=90):
+        """Retention: keep only the last `days` of history in the time-series tables."""
+        cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        cur = self.db.cursor()
+        for tbl, col in (("metrics", "ts"), ("position", "recv_ts"), ("telemetry", "recv_ts")):
+            cur.execute("DELETE FROM %s WHERE %s < ?" % (tbl, col), (cutoff,))
         self.db.commit()
 
     def log(self, msg):
@@ -287,6 +358,7 @@ class CarServer:
                     # data[0] is a fast counter; data[2:4] constant.
                     self._kv(cur, "main_raw", data[1])
                     self._kv(cur, "main_voltage", round(data[1] * 0.13138, 2))
+            self._snapshot_metrics(cur)
             self.db.commit()
 
     def log_unsupported(self, f, peer):

@@ -25,6 +25,7 @@ import json
 import os
 import sqlite3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
 
 DB = "/root/captures/car.db"
 AUTH = None  # expected "Basic <base64(user:pass)>" header, or None to disable
@@ -60,7 +61,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
       padding:8px 16px;background:#fff;border-bottom:1px solid #e3e3e3}
  #top .brand{font-weight:700;margin-right:8px;display:flex;flex-direction:column;line-height:1.1}
  #top .brand small{font-weight:400;color:#3aa76d;font-size:11px}
- .chip{display:flex;flex-direction:column;align-items:center;min-width:52px}
+ .chip{display:flex;flex-direction:column;align-items:center;min-width:52px;cursor:pointer}
+ .chip:hover{opacity:.7}
  .chip .ic{line-height:0}
  .chip .ic svg{width:22px;height:22px;display:block;color:#3a3a3c}
  .chip .cv{font-weight:600;font-size:14px;margin-top:2px;white-space:nowrap}
@@ -87,6 +89,12 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  .jt{color:#aaa;flex:0 0 88px} .js{color:#333;overflow:hidden;text-overflow:ellipsis}
  .jd{flex:0 0 62px;font-weight:700}
  .jd.dev{color:#1c8a4e} .jd.srv{color:#2a6fd6}
+ /* metric graph modal */
+ #gmodal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;align-items:center;justify-content:center}
+ #gbox{background:#fff;border-radius:10px;padding:14px 16px;width:680px;max-width:92vw;box-shadow:0 10px 40px rgba(0,0,0,.35)}
+ #ghead{display:flex;justify-content:space-between;align-items:center;font-weight:600;margin-bottom:8px}
+ #gclose{cursor:pointer;color:#999;font-size:18px;padding:0 6px;line-height:1}
+ #gchart{min-height:220px}
 </style></head><body>
 <div id="top">
   <div class="brand">Fiesta<small id="online">connecting…</small></div>
@@ -99,6 +107,10 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 </div>
 <div id="jhdr">Journal — <span style="color:#1c8a4e">device→</span> / <span style="color:#2a6fd6">←server</span></div>
 <div id="jwrap"><div id="jlist"></div></div>
+<div id="gmodal" onclick="if(event.target===this)closeGraph()">
+  <div id="gbox"><div id="ghead"><span id="gtitle"></span><span id="gclose" onclick="closeGraph()">✕</span></div>
+  <div id="gchart"></div></div>
+</div>
 <script>
 var BUILD='__BUILD__';
 var map=L.map('map').setView([0,0],2), marker=null, trackLayer=null, centered=false;
@@ -138,10 +150,10 @@ var ICONS={
  unlock:S+'<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.5-1.8"/></svg>',
  key:S+'<circle cx="12" cy="13.5" r="6.5"/><path d="M12 2.5V9"/></svg>'
 };
-function chip(icon,val,unit,label){
+function chip(icon,val,unit,label,metric){
   if(val==null||val===undefined||val==='') return '';
-  return '<div class="chip"><span class="ic">'+icon+'</span><span class="cv">'+val+(unit||'')+
-         '</span><span class="cl">'+label+'</span></div>';
+  return '<div class="chip" onclick="openGraph(\''+metric+'\',\''+label+'\')"><span class="ic">'+icon+
+         '</span><span class="cv">'+val+(unit||'')+'</span><span class="cl">'+label+'</span></div>';
 }
 // reverse-geocode to English, only when the position moves noticeably
 var lastGeo=null;
@@ -166,13 +178,13 @@ async function tick(){
   var top=document.getElementById('top');
   top.querySelectorAll('.chip').forEach(function(n){n.remove();});
   top.insertAdjacentHTML('beforeend',
-    chip(ICONS.main, kv.main_voltage, ' V', 'main')+
-    chip(ICONS.temp, kv.temperature, ' °C', 'temp')+
-    chip(ICONS.money, num(kv.sim_balance), '', 'balance')+
-    chip(ICONS.signal, kv.signal_dbm, ' dBm', 'signal')+
-    chip(ICONS.sat, kv.satellites, '', 'sats')+
-    chip(ICONS.backup, kv.backup_voltage, ' V', 'backup')+
-    chip(ICONS.pin, kv.pin_voltage, ' V', 'tag'));
+    chip(ICONS.main, kv.main_voltage, ' V', 'main', 'main_voltage')+
+    chip(ICONS.temp, kv.temperature, ' °C', 'temp', 'temperature')+
+    chip(ICONS.money, num(kv.sim_balance), '', 'balance', 'balance')+
+    chip(ICONS.signal, kv.signal_dbm, ' dBm', 'signal', 'signal_dbm')+
+    chip(ICONS.sat, kv.satellites, '', 'sats', 'satellites')+
+    chip(ICONS.backup, kv.backup_voltage, ' V', 'backup', 'backup_voltage')+
+    chip(ICONS.pin, kv.pin_voltage, ' V', 'tag', 'tag_voltage'));
   // armed state (decoded into kv.armed when available)
   var a=document.getElementById('armed'), av=(kv.armed||'').toLowerCase();
   if(av.indexOf('arm')>=0 && av.indexOf('dis')<0){ a.innerHTML=ICONS.lock+'Armed'; a.className='on'; }
@@ -210,6 +222,39 @@ async function tick(){
   }).join('');
  }catch(e){ document.getElementById('online').textContent='error: '+e; }
 }
+function openGraph(metric,label){
+  document.getElementById('gtitle').textContent=label+' — last 90 days';
+  document.getElementById('gchart').innerHTML='<div style="padding:40px;color:#888">loading…</div>';
+  document.getElementById('gmodal').style.display='flex';
+  fetch('/api/metric?name='+encodeURIComponent(metric),{cache:'no-store'})
+    .then(function(r){return r.json();})
+    .then(function(data){ document.getElementById('gchart').innerHTML=drawChart(data); })
+    .catch(function(e){ document.getElementById('gchart').innerHTML='<div style="padding:40px;color:#c0392b">error: '+e+'</div>'; });
+}
+function closeGraph(){ document.getElementById('gmodal').style.display='none'; }
+function drawChart(data){
+  if(!data||!data.length) return '<div style="padding:40px;color:#888">No data yet — the graph fills in as data is collected (~1 point/min).</div>';
+  var W=640,H=300,pad=44;
+  var xs=data.map(function(d){return new Date(String(d[0]).replace(' ','T')+'Z').getTime();});
+  var ys=data.map(function(d){return d[1];});
+  var x0=Math.min.apply(null,xs),x1=Math.max.apply(null,xs);
+  var y0=Math.min.apply(null,ys),y1=Math.max.apply(null,ys);
+  if(y0===y1){y0-=1;y1+=1;}
+  function px(t){return pad+(x1===x0?0:(t-x0)/(x1-x0))*(W-pad-8);}
+  function py(v){return H-pad-(v-y0)/(y1-y0)*(H-pad-14);}
+  var pts=data.map(function(d,i){return px(xs[i]).toFixed(1)+','+py(ys[i]).toFixed(1);}).join(' ');
+  var g='<svg viewBox="0 0 '+W+' '+H+'" width="100%" style="max-width:'+W+'px;height:auto">';
+  g+='<line x1="'+pad+'" y1="'+(H-pad)+'" x2="'+(W-8)+'" y2="'+(H-pad)+'" stroke="#ddd"/>';
+  g+='<line x1="'+pad+'" y1="10" x2="'+pad+'" y2="'+(H-pad)+'" stroke="#ddd"/>';
+  g+='<polyline points="'+pts+'" fill="none" stroke="#0b6" stroke-width="2" stroke-linejoin="round"/>';
+  g+='<text x="'+(pad-4)+'" y="16" font-size="11" fill="#666" text-anchor="end">'+y1.toFixed(2)+'</text>';
+  g+='<text x="'+(pad-4)+'" y="'+(H-pad)+'" font-size="11" fill="#666" text-anchor="end">'+y0.toFixed(2)+'</text>';
+  g+='<text x="'+pad+'" y="'+(H-pad+16)+'" font-size="10" fill="#999">'+new Date(x0).toLocaleString()+'</text>';
+  g+='<text x="'+(W-8)+'" y="'+(H-pad+16)+'" font-size="10" fill="#999" text-anchor="end">'+new Date(x1).toLocaleString()+'</text>';
+  g+='<text x="'+(W/2)+'" y="'+(H-2)+'" font-size="11" fill="#333" text-anchor="middle">'+data.length+' points · latest '+ys[ys.length-1]+'</text>';
+  g+='</svg>';
+  return g;
+}
 tick(); setInterval(tick,5000);
 </script></body></html>"""
 
@@ -241,6 +286,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, PAGE.replace("__BUILD__", BUILD), "text/html; charset=utf-8")
             elif self.path.startswith("/api/build"):
                 self._send(200, BUILD, "text/plain")
+            elif self.path.startswith("/api/metric"):
+                name = (parse_qs(urlparse(self.path).query).get("name") or [""])[0]
+                rows = q("SELECT ts,value FROM metrics WHERE name=? ORDER BY id", (name,))
+                step = max(1, len(rows) // 600)  # downsample to <=600 points
+                out = [[rows[i][0], rows[i][1]] for i in range(0, len(rows), step)]
+                self._send(200, json.dumps(out), "application/json")
             elif self.path.startswith("/api/latest"):
                 kv = {k: v for k, v in q("SELECT k,v FROM kv")}
                 rows = q("SELECT recv_ts,dev_time,lat,lon,speed_knots,course "
