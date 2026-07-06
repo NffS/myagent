@@ -265,7 +265,7 @@ function loadGraph(){
       if(!data[0]||!data[0].length){ chart.innerHTML='<div style="padding:40px;color:#888">No data in this period yet — it fills in as data is collected (~1 point/min).</div>'; return; }
       var w=Math.max(300,(chart.clientWidth||640));
       var opts={ width:w, height:300, scales:{x:{time:true}},
-        series:[ {}, {label:gLabel, stroke:'#0b6', width:2, points:{show:data[0].length<80}} ],
+        series:[ {}, {label:gLabel, stroke:'#0b6', width:2} ],
         cursor:{ drag:{x:true,y:false} } };
       uplotInst=new uPlot(opts,data,chart);
     })

@@ -40,6 +40,9 @@ import time
 MAGIC = b"\x40\x00"
 HDR = 20
 HS_EMPTY = [0x0e01, 0x0f01, 0x0405]
+# 0x0292 "set-time" payload = [unix_seconds LE u32][unix_minutes LE u32], UTC
+# (minutes = round(seconds/60)). This captured constant (=2026-07-06 08:02:58Z) is
+# kept only as a decode reference; standalone mode sends live time via build_time().
 TIME_BLOB = bytes.fromhex("32614b6ae385c501")
 DEFAULT_SUPPORTED = {0x0e00, 0x0110, 0x0220, 0x0230, 0x0209, 0x0240, 0x0250,
                      0x0260, 0x0270, 0x0290, 0x0100, 0x0302, 0x0304, 0x0400, 0x0610}
@@ -500,7 +503,7 @@ class CarServer:
                         self.log("LOGIN %s id=%s" % (peer, f["data"].decode("ascii", "replace")))
                         for ht in HS_EMPTY:
                             send(ht)
-                        send(0x0292, TIME_BLOB)
+                        send(0x0292, build_time())
                     elif t == 0x0110 and len(f["data"]) >= 8:
                         send(0x0115, f["data"][4:8])
                     elif t == 0x0400:
@@ -571,6 +574,8 @@ class CarServer:
                 frames, c = parse(buf)
                 del buf[:c]
                 for f in frames:
+                    if f["typ"] == 0x0292:
+                        self.log("SET-TIME 0x0292 payload=%s recv=%s" % (f["data"].hex(), now()))
                     self.journal_add("server", f["typ"], self.server_summary(f))
         except OSError:
             pass
