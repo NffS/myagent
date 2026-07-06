@@ -97,9 +97,17 @@ def parse_gps(text):
     dev_time = None
     if len(d) == 6 and len(t) >= 6 and d.isdigit() and t[:6].isdigit():
         dev_time = "20%s-%s-%s %s:%s:%s" % (d[4:6], d[2:4], d[0:2], t[0:2], t[2:4], t[4:6])
+    sats = int(p[9][1:]) if len(p) > 9 and p[9][:1] == "U" and p[9][1:].isdigit() else None
+    hdop = None
+    if len(p) > 10 and p[10]:
+        try:
+            hdop = float(p[10])
+        except ValueError:
+            pass
     return {"lat": round(lat, 6), "lon": round(lon, 6),
             "speed_knots": float(p[6]) if p[6] else 0.0,
-            "course": float(p[7]) if p[7] else None, "dev_time": dev_time}
+            "course": float(p[7]) if p[7] else None, "dev_time": dev_time,
+            "sats": sats, "hdop": hdop}
 
 
 class CarServer:
@@ -130,7 +138,11 @@ class CarServer:
         self.db.execute("CREATE TABLE IF NOT EXISTS telemetry(id INTEGER PRIMARY KEY,"
                         "recv_ts TEXT, type TEXT, hex TEXT)")
         self.db.execute("CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT, updated TEXT)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS journal(id INTEGER PRIMARY KEY,"
+                        "ts TEXT, dir TEXT, summary TEXT)")
         self.db.commit()
+        self._jn = 0
+        self._jlast = {}
         self.dblock = threading.Lock()
         self._trace_last = {}
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -148,8 +160,9 @@ class CarServer:
         if r:
             d = bytes.fromhex(r[0])
             if len(d) >= 16:
-                self._kv(cur, "main_voltage", round((d[14] | (d[15] << 8)) * 0.01926, 2))
+                self._kv(cur, "main_voltage", round((d[14] | (d[15] << 8)) * 0.019388, 2))
                 self._kv(cur, "pin_voltage", round((d[12] | (d[13] << 8)) * 0.02857, 2))
+                self._kv(cur, "backup_voltage", round((d[8] | (d[9] << 8)) * 0.007754, 2))
         r = cur.execute("SELECT hex FROM telemetry WHERE type='0x0270' ORDER BY id DESC LIMIT 1").fetchone()
         if r:
             d = bytes.fromhex(r[0])
@@ -189,6 +202,10 @@ class CarServer:
                     self._kv(cur, "last_lon", g["lon"])
                     self._kv(cur, "last_speed_knots", g["speed_knots"])
                     self._kv(cur, "last_fix_time", g["dev_time"])
+                    if g["sats"] is not None:
+                        self._kv(cur, "satellites", g["sats"])
+                    if g["hdop"] is not None:
+                        self._kv(cur, "hdop", g["hdop"])
             elif typ == 0x0230:
                 self._kv(cur, "last_cell", txt)
             elif typ == 0x0260:
@@ -201,15 +218,20 @@ class CarServer:
                 cur.execute("INSERT INTO telemetry(recv_ts,type,hex) VALUES(?,?,?)",
                             (now(), "0x%04x" % typ, data.hex()))
                 # 0x0110 record carries the voltages; 0x0270 carries temperature.
-                # scales calibrated 2026-07-06 against the Car-Online app
-                # (main 637->12.27V, backup 98->3.97V, temp byte->51C).
+                # single-point scales calibrated 2026-07-06 vs the Car-Online app:
+                #   main  = data[14:16] (637 -> 12.35V)
+                #   backup= data[8:10]  (512 -> 3.97V)   [stable full-battery reading]
+                #   pin   = data[12:14] (98  -> 2.80V)   [varying tag/analog input]
                 if typ == 0x0110 and len(data) >= 16:
+                    bkp = data[8] | (data[9] << 8)
                     pin = data[12] | (data[13] << 8)
                     mn = data[14] | (data[15] << 8)
                     self._kv(cur, "main_raw", mn)
                     self._kv(cur, "pin_raw", pin)
-                    self._kv(cur, "main_voltage", round(mn * 0.01926, 2))
+                    self._kv(cur, "backup_raw", bkp)
+                    self._kv(cur, "main_voltage", round(mn * 0.019388, 2))
                     self._kv(cur, "pin_voltage", round(pin * 0.02857, 2))
+                    self._kv(cur, "backup_voltage", round(bkp * 0.007754, 2))
                 elif typ == 0x0270 and len(data) >= 3:
                     t = data[2] - 256 if data[2] >= 128 else data[2]
                     self._kv(cur, "temp_raw", data[2])
@@ -226,6 +248,32 @@ class CarServer:
         self.log("UNSUPPORTED type=0x%04x len=%d hex=%s |%s|"
                  % (f["typ"], len(f["data"]), f["data"].hex()[:64], asc[:40]))
 
+    # server->device frame types we recognise (handshake + record ACKs + cmds)
+    SRV_NAMES = {0x0e01: "login-ack", 0x0f01: "handshake", 0x0405: "handshake",
+                 0x0292: "set-time", 0x0115: "record-ack", 0x0450: "ack",
+                 0x0600: "ack", 0x0210: "command", 0x0230: "command"}
+
+    def server_summary(self, f):
+        """Compact description of a Car-Online -> device frame (relay only)."""
+        nm = self.SRV_NAMES.get(f["typ"])
+        return ("%s 0x%04x" % (nm, f["typ"])) if nm else ("0x%04x %dB" % (f["typ"], len(f["data"])))
+
+    def journal_add(self, direction, typ, text, throttle=2.0):
+        """Append a message to the journal (throttled per direction+type so a
+        history dump doesn't flood it). direction is 'device' or 'server'."""
+        key = (direction, typ)
+        t = time.time()
+        if throttle and t - self._jlast.get(key, 0) < throttle:
+            return
+        self._jlast[key] = t
+        with self.dblock:
+            cur = self.db.cursor()
+            cur.execute("INSERT INTO journal(ts,dir,summary) VALUES(?,?,?)", (now(), direction, text))
+            self._jn += 1
+            if self._jn % 50 == 0:
+                cur.execute("DELETE FROM journal WHERE id < (SELECT max(id)-800 FROM journal)")
+            self.db.commit()
+
     def summary(self, f):
         """One-line, minimal, human-readable trace of a supported frame."""
         typ = f["typ"]
@@ -233,10 +281,14 @@ class CarServer:
         try:
             if typ == 0x0220:
                 g = parse_gps(d.decode("ascii", "replace"))
-                return ("gps %.5f,%.5f %.0fkn" % (g["lat"], g["lon"], g["speed_knots"])) if g else "gps (no fix)"
+                if not g:
+                    return "gps (no fix)"
+                return "gps %.5f,%.5f %.0fkn%s" % (g["lat"], g["lon"], g["speed_knots"],
+                                                   " %dsat" % g["sats"] if g["sats"] is not None else "")
             if typ == 0x0110 and len(d) >= 16:
-                return "rec main=%.2fV bk=%.2fV" % ((d[14] | (d[15] << 8)) * 0.01926,
-                                                    (d[12] | (d[13] << 8)) * 0.04051)
+                return "rec main=%.2fV bk=%.2fV pin=%.2fV" % ((d[14] | (d[15] << 8)) * 0.019388,
+                                                              (d[8] | (d[9] << 8)) * 0.007754,
+                                                              (d[12] | (d[13] << 8)) * 0.02857)
             if typ == 0x0230:
                 return "cell %s" % d.decode("ascii", "replace")[:24]
             if typ == 0x0260:
@@ -270,6 +322,7 @@ class CarServer:
             self.trace(f)
         else:
             self.log_unsupported(f, peer)
+        self.journal_add("device", f["typ"], self.summary(f))
 
     def serve(self):
         ls = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -378,12 +431,20 @@ class CarServer:
                     pass
 
     def _pump_raw(self, src, dst):
+        """upstream(Car-Online) -> device: forward verbatim AND journal each
+        frame so we can see what the server sends back (record-acks, commands)."""
+        buf = bytearray()
         try:
             while True:
                 d = src.recv(65535)
                 if not d:
                     break
                 dst.sendall(d)
+                buf.extend(d)
+                frames, c = parse(buf)
+                del buf[:c]
+                for f in frames:
+                    self.journal_add("server", f["typ"], self.server_summary(f))
         except OSError:
             pass
         finally:

@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """
-webapp.py - simple live dashboard for the AgentMS3 tracker.
+webapp.py - live dashboard for the AgentMS3 tracker, laid out like the
+Car-Online app: a top row of pictograms (main/backup/pin voltage, temperature,
+SIM balance, signal, satellites), a map in the middle, and a bottom bar with
+the current street address (reverse-geocoded to English) + armed state + time.
+A journal panel underneath shows recent protocol messages with their direction
+(device -> us, and Car-Online server -> device when relaying).
 
-Reads the SQLite DB that carserver.py writes (position / telemetry / kv) and
-serves a one-page dashboard: an OpenStreetMap map with the car's latest
-position + track, and a panel of live values (speed, last fix, SIM balance,
-cell, firmware, last-seen). Auto-refreshes every few seconds.
+Reads the SQLite DB that carserver.py writes (position / telemetry / kv /
+journal). Stdlib only.
 
 Routes:
-  GET /            dashboard HTML
-  GET /api/latest  JSON: latest position + kv values
-  GET /api/track   JSON: recent positions [[lat,lon],...] for the polyline
+  GET /             dashboard HTML
+  GET /api/latest   JSON: latest position + kv values
+  GET /api/track    JSON: recent positions [[lat,lon],...] for the polyline
+  GET /api/journal  JSON: recent journal messages [{ts,dir,summary},...]
 
-Stdlib only.  python3 webapp.py [--port 80] [--db /root/captures/car.db]
+  python3 webapp.py [--port 3322] [--db /root/captures/car.db] [--auth user:pass]
 """
 
 import argparse
@@ -39,53 +43,113 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
- body{font-family:system-ui,Arial,sans-serif;margin:0;color:#1c1c1e}
- header{padding:10px 16px;background:#0b3d2e;color:#fff}
- header b{font-size:17px} #st{float:right;font-size:13px;opacity:.85}
- #map{height:58vh;width:100%}
- .panel{padding:14px 16px}
- table{border-collapse:collapse;width:100%;max-width:620px}
- td{padding:6px 10px;border-bottom:1px solid #eee;font-size:14px}
- td.k{color:#888;width:190px} td.v{font-weight:600}
- .big{font-size:20px}
+ *{box-sizing:border-box}
+ html,body{height:100%}
+ body{font-family:system-ui,Arial,sans-serif;margin:0;color:#1c1c1e;
+      display:flex;flex-direction:column;height:100vh}
+ /* top pictogram bar */
+ #top{display:flex;flex-wrap:wrap;align-items:center;gap:6px 18px;
+      padding:8px 16px;background:#fff;border-bottom:1px solid #e3e3e3}
+ #top .brand{font-weight:700;margin-right:8px;display:flex;flex-direction:column;line-height:1.1}
+ #top .brand small{font-weight:400;color:#3aa76d;font-size:11px}
+ .chip{display:flex;flex-direction:column;align-items:center;min-width:52px}
+ .chip .ic{font-size:17px;line-height:1}
+ .chip .cv{font-weight:600;font-size:14px;margin-top:2px;white-space:nowrap}
+ .chip .cl{font-size:9.5px;color:#9a9a9a;text-transform:uppercase;letter-spacing:.3px}
+ #map{flex:1 1 auto;width:100%;min-height:200px}
+ /* bottom address / armed bar */
+ #bottom{padding:9px 16px;background:#fff;border-top:1px solid #e3e3e3;
+         display:flex;align-items:center;gap:12px}
+ #armed{font-weight:700;padding:3px 10px;border-radius:14px;font-size:13px;white-space:nowrap}
+ #armed.on{background:#e7f6ec;color:#1c8a4e} #armed.off{background:#fdeaea;color:#c0392b}
+ #armed.unk{background:#eee;color:#888}
+ #addrwrap{flex:1 1 auto;min-width:0}
+ #addr{font-size:13.5px;line-height:1.25} #evt{font-size:12px;color:#888}
+ /* journal */
+ #jwrap{max-height:26vh;overflow:auto;background:#fafafa;border-top:1px solid #e3e3e3;
+        font-family:ui-monospace,Consolas,monospace;font-size:12px}
+ #jhdr{position:sticky;top:0;background:#f0f0f0;padding:4px 16px;font-weight:600;
+       color:#555;border-bottom:1px solid #e3e3e3;font-family:system-ui}
+ .jr{display:flex;gap:10px;padding:2px 16px;border-bottom:1px solid #f0f0f0}
+ .jt{color:#aaa;flex:0 0 88px} .js{color:#333;overflow:hidden;text-overflow:ellipsis}
+ .jd{flex:0 0 62px;font-weight:700}
+ .jd.dev{color:#1c8a4e} .jd.srv{color:#2a6fd6}
 </style></head><body>
-<header><b>🚗 AgentMS3 — live tracker</b><span id="st">connecting…</span></header>
+<div id="top">
+  <div class="brand">AgentMS3<small id="online">connecting…</small></div>
+</div>
 <div id="map"></div>
-<div class="panel"><table id="tbl"></table></div>
+<div id="bottom">
+  <span id="armed" class="unk">—</span>
+  <div id="addrwrap"><div id="addr">locating…</div><div id="evt"></div></div>
+</div>
+<div id="jhdr">Journal — <span style="color:#1c8a4e">device→</span> / <span style="color:#2a6fd6">←server</span></div>
+<div id="jwrap"><div id="jlist"></div></div>
 <script>
 var map=L.map('map').setView([0,0],2), marker=null, line=null, centered=false;
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
   {maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
-function row(k,v,big){return '<tr><td class="k">'+k+'</td><td class="v'+(big?' big':'')+'">'+(v==null?'-':v)+'</td></tr>';}
-var TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local';
-// server stores UTC 'YYYY-MM-DD HH:MM:SS'; render in the viewer's local timezone
-function localTime(s){ if(!s) return '-'; var d=new Date(String(s).replace(' ','T')+'Z'); return isNaN(d.getTime())? s : d.toLocaleString(); }
+var TZ=Intl.DateTimeFormat().resolvedOptions().timeZone||'local';
+function localTime(s){ if(!s) return '-'; var d=new Date(String(s).replace(' ','T')+'Z'); return isNaN(d.getTime())?s:d.toLocaleString(); }
+function timeOnly(s){ if(!s) return ''; var d=new Date(String(s).replace(' ','T')+'Z'); return isNaN(d.getTime())?s:d.toLocaleTimeString(); }
+function num(s){ var m=String(s==null?'':s).match(/-?[\\d.]+/); return m?m[0]:null; }
+function chip(icon,val,unit,label){
+  if(val==null||val===undefined||val==='') return '';
+  return '<div class="chip"><span class="ic">'+icon+'</span><span class="cv">'+val+(unit||'')+
+         '</span><span class="cl">'+label+'</span></div>';
+}
+// reverse-geocode to English, only when the position moves noticeably
+var lastGeo=null;
+async function geocode(lat,lon){
+  if(lastGeo && Math.abs(lastGeo[0]-lat)<5e-4 && Math.abs(lastGeo[1]-lon)<5e-4) return;
+  lastGeo=[lat,lon];
+  try{
+    var j=await (await fetch('https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat='+
+        lat+'&lon='+lon+'&accept-language=en&zoom=18',{cache:'no-store'})).json();
+    if(j && j.display_name) document.getElementById('addr').textContent=j.display_name;
+  }catch(e){}
+}
 async function tick(){
  try{
   var d=await (await fetch('/api/latest',{cache:'no-store'})).json();
   var p=d.position, kv=d.kv||{};
-  document.getElementById('st').textContent = p? ('last fix '+localTime(p.dev_time||p.recv_ts)+'  ·  '+TZ) : 'waiting for data';
-  document.getElementById('tbl').innerHTML =
-    row('Position', p? (p.lat.toFixed(6)+', '+p.lon.toFixed(6)):null, true)+
-    row('Speed', d.speed_kmh!=null? d.speed_kmh+' km/h':null, true)+
-    row('Main voltage', kv.main_voltage? kv.main_voltage+' V':null, true)+
-    row('Pin voltage', kv.pin_voltage? kv.pin_voltage+' V':null, true)+
-    row('Temperature', kv.temperature!=null&&kv.temperature!==undefined? kv.temperature+' °C':null)+
-    row('Last fix', p?localTime(p.dev_time):null)+
-    row('Received', p?localTime(p.recv_ts):null)+
-    row('SIM balance', kv.sim_balance)+
-    row('Cell MCC,MNC,LAC,CID', kv.last_cell)+
-    row('Firmware', kv.version)+
-    row('Device id', kv.device_id)+
-    row('Last seen', localTime(kv.last_seen))+
-    row('Times shown in', TZ)+
-    row('Fixes stored', d.positions);
+  var stale = kv.last_seen ? (Date.now()-new Date(kv.last_seen.replace(' ','T')+'Z').getTime())>120000 : true;
+  document.getElementById('online').textContent=(stale?'offline':'online')+' · '+TZ;
+  document.getElementById('online').style.color=stale?'#c0392b':'#3aa76d';
+  // rebuild pictogram bar
+  var top=document.getElementById('top');
+  top.querySelectorAll('.chip').forEach(function(n){n.remove();});
+  top.insertAdjacentHTML('beforeend',
+    chip('🔋', kv.main_voltage, ' V', 'main')+
+    chip('🌡️', kv.temperature, ' °C', 'temp')+
+    chip('💰', num(kv.sim_balance), '', 'balance')+
+    chip('📶', kv.signal, ' dBm', 'signal')+
+    chip('🛰️', kv.satellites, '', 'sats')+
+    chip('🪫', kv.backup_voltage, ' V', 'backup')+
+    chip('🏷️', kv.pin_voltage, ' V', 'pin'));
+  // armed state (decoded into kv.armed when available)
+  var a=document.getElementById('armed'), av=(kv.armed||'').toLowerCase();
+  if(av.indexOf('arm')>=0 && av.indexOf('dis')<0){ a.textContent='🔒 Armed'; a.className='on'; }
+  else if(av.indexOf('dis')>=0 || av==='off'){ a.textContent='🔓 Disarmed'; a.className='off'; }
+  else { a.textContent='🔒 —'; a.className='unk'; }
+  document.getElementById('evt').textContent =
+    (p?('fix '+localTime(p.dev_time||p.recv_ts)):'waiting for data')+
+    (kv.speed_kmh!=null?'  ·  '+kv.speed_kmh+' km/h':'')+
+    (d.speed_kmh!=null?'  ·  '+d.speed_kmh+' km/h':'');
   if(p){ var ll=[p.lat,p.lon];
     if(!marker){marker=L.marker(ll).addTo(map);} else {marker.setLatLng(ll);}
-    if(!centered){map.setView(ll,15);centered=true;} }
+    if(!centered){map.setView(ll,16);centered=true;}
+    geocode(p.lat,p.lon); }
   var tr=await (await fetch('/api/track',{cache:'no-store'})).json();
   if(tr.length){ if(line){line.remove();} line=L.polyline(tr,{color:'#0b6',weight:3}).addTo(map);}
- }catch(e){ document.getElementById('st').textContent='error: '+e; }
+  var jr=await (await fetch('/api/journal',{cache:'no-store'})).json();
+  document.getElementById('jlist').innerHTML=jr.map(function(e){
+    var dev=e.dir==='device';
+    return '<div class="jr"><span class="jt">'+timeOnly(e.ts)+'</span>'+
+      '<span class="jd '+(dev?'dev':'srv')+'">'+(dev?'DEV →':'← SRV')+'</span>'+
+      '<span class="js">'+e.summary+'</span></div>';
+  }).join('');
+ }catch(e){ document.getElementById('online').textContent='error: '+e; }
 }
 tick(); setInterval(tick,5000);
 </script></body></html>"""
@@ -133,6 +197,10 @@ class Handler(BaseHTTPRequestHandler):
                 rows = q("SELECT lat,lon FROM position ORDER BY id DESC LIMIT 400")
                 self._send(200, json.dumps([[r[0], r[1]] for r in rows][::-1]),
                            "application/json")
+            elif self.path.startswith("/api/journal"):
+                rows = q("SELECT ts,dir,summary FROM journal ORDER BY id DESC LIMIT 60")
+                self._send(200, json.dumps([{"ts": r[0], "dir": r[1], "summary": r[2]}
+                                            for r in rows]), "application/json")
             else:
                 self._send(404, "not found", "text/plain")
         except Exception as e:
