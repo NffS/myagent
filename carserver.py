@@ -30,6 +30,7 @@ import datetime
 import json
 import os
 import socket
+import sqlite3
 import struct
 import threading
 
@@ -87,11 +88,53 @@ def parse(buf):
     return out, i
 
 
+def parse_gps(text):
+    """Parse a type-0x0220 GPS record (RMC-like ASCII) ->
+    dict(lat, lon, speed_knots, course, dev_time) or None.
+    e.g. '082501.00,A,3744.78404,N,02354.73824,E,0.020,,060726,U12,1.1'"""
+    p = text.split(",")
+    if len(p) < 9 or p[1] != "A":
+        return None
+
+    def dm(v, dd):
+        if not v or "." not in v:
+            return None
+        return int(v[:dd]) + float(v[dd:]) / 60.0
+    lat = dm(p[2], 2)
+    lon = dm(p[4], 3)
+    if lat is None or lon is None:
+        return None
+    if p[3] == "S":
+        lat = -lat
+    if p[5] == "W":
+        lon = -lon
+    t, d = p[0], p[8]
+    dev_time = None
+    if len(d) == 6 and len(t) >= 6 and d.isdigit() and t[:6].isdigit():
+        dev_time = "20%s-%s-%s %s:%s:%s" % (d[4:6], d[2:4], d[0:2], t[0:2], t[2:4], t[4:6])
+    return {"lat": round(lat, 6), "lon": round(lon, 6),
+            "speed_knots": float(p[6]) if p[6] else 0.0,
+            "course": float(p[7]) if p[7] else None, "dev_time": dev_time}
+
+
 class CarServer:
     def __init__(self, port, capdir):
         self.port = port
         self.capdir = capdir
         os.makedirs(capdir, exist_ok=True)
+        self.dbpath = os.path.join(capdir, "car.db")
+        self.db = sqlite3.connect(self.dbpath, check_same_thread=False)
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA synchronous=NORMAL")
+        self.db.execute("CREATE TABLE IF NOT EXISTS position("
+                        "id INTEGER PRIMARY KEY, recv_ts TEXT, dev_time TEXT,"
+                        "lat REAL, lon REAL, speed_knots REAL, course REAL)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS telemetry("
+                        "id INTEGER PRIMARY KEY, recv_ts TEXT, type TEXT, hex TEXT)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT, updated TEXT)")
+        self.db.commit()
+        self.dblock = threading.Lock()
+        self._pending = 0
         self.framespath = os.path.join(
             capdir, "carserver_frames_%s.jsonl" % datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
         self.lock = threading.Lock()
@@ -113,6 +156,46 @@ class CarServer:
         with self.lock:
             self.framesfh.write(json.dumps(rec) + "\n")
             self.framesfh.flush()
+
+    def _kv(self, cur, k, v):
+        cur.execute("INSERT INTO kv(k,v,updated) VALUES(?,?,?) "
+                    "ON CONFLICT(k) DO UPDATE SET v=excluded.v, updated=excluded.updated",
+                    (k, str(v), now()))
+
+    def store(self, f):
+        """Parse & persist a device data frame to SQLite for the webapp."""
+        typ = f["typ"]
+        data = f["data"]
+        txt = data.decode("ascii", "replace")
+        with self.dblock:
+            cur = self.db.cursor()
+            self._kv(cur, "last_seen", now())
+            if typ == 0x0e00:
+                self._kv(cur, "device_login", txt)
+                self._kv(cur, "device_id", "0x%08x" % f["frm"])
+            elif typ == 0x0220:
+                g = parse_gps(txt)
+                if g:
+                    cur.execute("INSERT INTO position(recv_ts,dev_time,lat,lon,speed_knots,course)"
+                                " VALUES(?,?,?,?,?,?)",
+                                (now(), g["dev_time"], g["lat"], g["lon"],
+                                 g["speed_knots"], g["course"]))
+                    self._kv(cur, "last_lat", g["lat"])
+                    self._kv(cur, "last_lon", g["lon"])
+                    self._kv(cur, "last_speed_knots", g["speed_knots"])
+                    self._kv(cur, "last_fix_time", g["dev_time"])
+            elif typ == 0x0230:
+                self._kv(cur, "last_cell", txt)
+            elif typ == 0x0260:
+                self._kv(cur, "sim_balance", txt)
+            elif typ == 0x0302:
+                self._kv(cur, "version", txt)
+            elif typ == 0x0304:
+                self._kv(cur, "devinfo", txt)
+            elif typ in (0x0240, 0x0250, 0x0270, 0x0290):
+                cur.execute("INSERT INTO telemetry(recv_ts,type,hex) VALUES(?,?,?)",
+                            (now(), "0x%04x" % typ, data.hex()))
+            self.db.commit()
 
     def serve(self):
         ls = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -156,6 +239,10 @@ class CarServer:
                     asc = "".join(chr(b) if 32 <= b < 127 else "." for b in f["data"])
                     self.log("D>S ctr=%d %-8s dl=%d |%s" % (f["ctr"], name, len(f["data"]), asc[:60]))
                     self.record(peer, "D>S", f)
+                    try:
+                        self.store(f)
+                    except Exception as e:
+                        self.log("store err type=0x%04x: %s" % (typ, e))
 
                     if typ == 0x0e00:                       # login -> handshake
                         dev_id = f["frm"]
