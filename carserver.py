@@ -168,6 +168,11 @@ class CarServer:
             d = bytes.fromhex(r[0])
             if len(d) >= 3:
                 self._kv(cur, "temperature", d[2] - 256 if d[2] >= 128 else d[2])
+        r = cur.execute("SELECT hex FROM telemetry WHERE type='0x0250' ORDER BY id DESC LIMIT 1").fetchone()
+        if r:
+            d = bytes.fromhex(r[0])
+            if len(d) >= 2:
+                self._kv(cur, "backup_voltage", round(d[1] * 0.042234, 2))
         r = cur.execute("SELECT v FROM kv WHERE k='last_cell'").fetchone()
         if r:
             self._cell_signal(cur, r[0])
@@ -259,6 +264,13 @@ class CarServer:
                     t = data[2] - 256 if data[2] >= 128 else data[2]
                     self._kv(cur, "temp_raw", data[2])
                     self._kv(cur, "temperature", t)
+                elif typ == 0x0250 and len(data) >= 2:
+                    # data[1] = internal backup (Li-ion) battery: byte 94 -> 3.97V
+                    # (calibrated vs app). Session range 79-110 -> 3.3-4.65V, a
+                    # textbook Li-ion span; updates slowly (~every few min, value
+                    # near-constant). data[0] is a fast counter; data[2:4] constant.
+                    self._kv(cur, "backup_raw", data[1])
+                    self._kv(cur, "backup_voltage", round(data[1] * 0.042234, 2))
             self.db.commit()
 
     def log_unsupported(self, f, peer):
@@ -309,7 +321,7 @@ class CarServer:
                 return "gps %.5f,%.5f %.0fkn%s" % (g["lat"], g["lon"], g["speed_knots"],
                                                    " %dsat" % g["sats"] if g["sats"] is not None else "")
             if typ == 0x0110 and len(d) >= 16:
-                return "rec main=%.2fV pin=%.2fV st=%04x/%04x" % (
+                return "rec main=%.2fV tag=%.2fV st=%04x/%04x" % (
                     (d[14] | (d[15] << 8)) * 0.019388, (d[12] | (d[13] << 8)) * 0.02857,
                     d[8] | (d[9] << 8), d[10] | (d[11] << 8))
             if typ == 0x0230:
@@ -318,6 +330,8 @@ class CarServer:
                 return "bal %s" % d.decode("ascii", "replace").strip()[:24]
             if typ == 0x0270 and len(d) >= 3:
                 return "temp %dC" % (d[2] - 256 if d[2] >= 128 else d[2])
+            if typ == 0x0250 and len(d) >= 2:
+                return "backup %.2fV" % (d[1] * 0.042234)
             if typ == 0x0302:
                 return "ver %s" % d.decode("ascii", "replace")[:24]
             if typ == 0x0e00:
