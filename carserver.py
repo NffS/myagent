@@ -34,6 +34,7 @@ import socket
 import sqlite3
 import struct
 import threading
+import time
 
 MAGIC = b"\x40\x00"
 HDR = 20
@@ -131,6 +132,7 @@ class CarServer:
         self.db.execute("CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT, updated TEXT)")
         self.db.commit()
         self.dblock = threading.Lock()
+        self._trace_last = {}
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self.loglock = threading.Lock()
         self.logfh = open(os.path.join(capdir, "carserver_%s.log" % ts), "a", encoding="utf-8")
@@ -224,12 +226,49 @@ class CarServer:
         self.log("UNSUPPORTED type=0x%04x len=%d hex=%s |%s|"
                  % (f["typ"], len(f["data"]), f["data"].hex()[:64], asc[:40]))
 
+    def summary(self, f):
+        """One-line, minimal, human-readable trace of a supported frame."""
+        typ = f["typ"]
+        d = f["data"]
+        try:
+            if typ == 0x0220:
+                g = parse_gps(d.decode("ascii", "replace"))
+                return ("gps %.5f,%.5f %.0fkn" % (g["lat"], g["lon"], g["speed_knots"])) if g else "gps (no fix)"
+            if typ == 0x0110 and len(d) >= 16:
+                return "rec main=%.2fV bk=%.2fV" % ((d[14] | (d[15] << 8)) * 0.01926,
+                                                    (d[12] | (d[13] << 8)) * 0.04051)
+            if typ == 0x0230:
+                return "cell %s" % d.decode("ascii", "replace")[:24]
+            if typ == 0x0260:
+                return "bal %s" % d.decode("ascii", "replace").strip()[:24]
+            if typ == 0x0270 and len(d) >= 3:
+                return "temp %dC" % (d[2] - 256 if d[2] >= 128 else d[2])
+            if typ == 0x0302:
+                return "ver %s" % d.decode("ascii", "replace")[:24]
+            if typ == 0x0e00:
+                return "login %s" % d.decode("ascii", "replace")
+        except Exception:
+            pass
+        return "0x%04x %dB" % (typ, len(d))
+
+    def trace(self, f):
+        """Emit a throttled (>=2s per type) minimal trace line -- proves liveness
+        without flooding the log during history dumps."""
+        typ = f["typ"]
+        t = time.time()
+        if t - self._trace_last.get(typ, 0) < 2.0:
+            return
+        self._trace_last[typ] = t
+        self.log("~ " + self.summary(f))
+
     def process(self, f, peer):
         try:
             self.store(f)
         except Exception as e:
             self.log("store err 0x%04x: %s" % (f["typ"], e))
-        if f["typ"] not in self.supported:
+        if f["typ"] in self.supported:
+            self.trace(f)
+        else:
             self.log_unsupported(f, peer)
 
     def serve(self):

@@ -16,11 +16,13 @@ Stdlib only.  python3 webapp.py [--port 80] [--db /root/captures/car.db]
 """
 
 import argparse
+import base64
 import json
 import sqlite3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DB = "/root/captures/car.db"
+AUTH = None  # expected "Basic <base64(user:pass)>" header, or None to disable
 
 
 def q(sql, args=()):
@@ -99,7 +101,18 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b)
 
+    def _authed(self):
+        if not AUTH:
+            return True
+        return self.headers.get("Authorization", "") == AUTH
+
     def do_GET(self):
+        if not self._authed():
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="AgentMS3 tracker"')
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         try:
             if self.path == "/" or self.path.startswith("/?") or self.path.startswith("/index"):
                 self._send(200, PAGE, "text/html; charset=utf-8")
@@ -130,13 +143,16 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global DB
+    global DB, AUTH
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=80)
+    ap.add_argument("--port", type=int, default=3322)
     ap.add_argument("--db", default=DB)
+    ap.add_argument("--auth", default=None, help="require HTTP Basic auth, 'user:pass'")
     a = ap.parse_args()
     DB = a.db
-    print("webapp on :%d  (db %s)" % (a.port, DB), flush=True)
+    if a.auth:
+        AUTH = "Basic " + base64.b64encode(a.auth.encode()).decode()
+    print("webapp on :%d  (db %s)  auth=%s" % (a.port, DB, "on" if AUTH else "off"), flush=True)
     ThreadingHTTPServer(("0.0.0.0", a.port), Handler).serve_forever()
 
 
