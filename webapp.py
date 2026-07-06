@@ -102,6 +102,15 @@ var legend=L.control({position:'bottomleft'});
 legend.onAdd=function(){var d=L.DomUtil.create('div','speedleg');
   d.innerHTML='track: <b style="color:hsl(0,90%,45%)">slow</b> · <b style="color:hsl(120,90%,45%)">~55</b> · <b style="color:hsl(240,90%,45%)">100+ km/h</b>';return d;};
 legend.addTo(map);
+var pinIcon=new L.Icon.Default();
+// bearing (deg) from point a[lat,lon] to b[lat,lon]
+function bearing(a,b){var la1=a[0]*Math.PI/180,la2=b[0]*Math.PI/180,dl=(b[1]-a[1])*Math.PI/180;
+  var y=Math.sin(dl)*Math.cos(la2),x=Math.cos(la1)*Math.sin(la2)-Math.sin(la1)*Math.cos(la2)*Math.cos(dl);
+  return (Math.atan2(y,x)*180/Math.PI+360)%360;}
+// heading arrow (points to travel direction) shown while moving
+function arrowIcon(deg){return L.divIcon({className:'',iconSize:[30,30],iconAnchor:[15,15],
+  html:'<div style="transform:rotate('+deg+'deg)"><svg viewBox="0 0 24 24" width="30" height="30">'+
+  '<path d="M12 2l6 18-6-4-6 4z" fill="#1565c0" stroke="#fff" stroke-width="1.3" stroke-linejoin="round"/></svg></div>'});}
 var TZ=Intl.DateTimeFormat().resolvedOptions().timeZone||'local';
 function localTime(s){ if(!s) return '-'; var d=new Date(String(s).replace(' ','T')+'Z'); return isNaN(d.getTime())?s:d.toLocaleString(); }
 function timeOnly(s){ if(!s) return ''; var d=new Date(String(s).replace(' ','T')+'Z'); return isNaN(d.getTime())?s:d.toLocaleTimeString(); }
@@ -168,16 +177,20 @@ async function tick(){
     (p?'':'waiting for data')+
     (d.speed_kmh!=null? d.speed_kmh+' km/h':'')+
     (kv.moving==='yes'?' · moving':'');
-  if(p){ var ll=[p.lat,p.lon];
-    if(!marker){marker=L.marker(ll).addTo(map);} else {marker.setLatLng(ll);}
-    if(!centered){map.setView(ll,16);centered=true;}
-    geocode(p.lat,p.lon); }
   var tr=await (await fetch('/api/track',{cache:'no-store'})).json();
   trackLayer.clearLayers();
   for(var i=1;i<tr.length;i++){
     L.polyline([[tr[i-1][0],tr[i-1][1]],[tr[i][0],tr[i][1]]],
       {color:speedColor(tr[i][2]),weight:4,opacity:.9}).addTo(trackLayer);
   }
+  if(p){ var ll=[p.lat,p.lon];
+    var moving=(kv.moving==='yes')||((d.speed_kmh||0)>3);
+    var hd=(tr.length>=2)?bearing(tr[tr.length-2],tr[tr.length-1]):null;
+    if(!marker){marker=L.marker(ll).addTo(map);}
+    marker.setLatLng(ll);
+    marker.setIcon(moving&&hd!=null?arrowIcon(hd):pinIcon);
+    if(!centered){map.setView(ll,16);centered=true;}
+    geocode(p.lat,p.lon); }
   var jr=await (await fetch('/api/journal',{cache:'no-store'})).json();
   document.getElementById('jlist').innerHTML=jr.map(function(e){
     var dev=e.dir==='device';
