@@ -55,24 +55,28 @@ var map=L.map('map').setView([0,0],2), marker=null, line=null, centered=false;
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
   {maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
 function row(k,v,big){return '<tr><td class="k">'+k+'</td><td class="v'+(big?' big':'')+'">'+(v==null?'-':v)+'</td></tr>';}
+var TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'local';
+// server stores UTC 'YYYY-MM-DD HH:MM:SS'; render in the viewer's local timezone
+function localTime(s){ if(!s) return '-'; var d=new Date(String(s).replace(' ','T')+'Z'); return isNaN(d.getTime())? s : d.toLocaleString(); }
 async function tick(){
  try{
   var d=await (await fetch('/api/latest',{cache:'no-store'})).json();
   var p=d.position, kv=d.kv||{};
-  document.getElementById('st').textContent = p? ('last fix '+(p.dev_time||p.recv_ts)) : 'waiting for data';
+  document.getElementById('st').textContent = p? ('last fix '+localTime(p.dev_time||p.recv_ts)+'  ·  '+TZ) : 'waiting for data';
   document.getElementById('tbl').innerHTML =
     row('Position', p? (p.lat.toFixed(6)+', '+p.lon.toFixed(6)):null, true)+
     row('Speed', d.speed_kmh!=null? d.speed_kmh+' km/h':null, true)+
     row('Main voltage', kv.main_voltage? kv.main_voltage+' V':null, true)+
     row('Backup battery', kv.backup_voltage? kv.backup_voltage+' V':null)+
     row('Temperature', kv.temperature!=null&&kv.temperature!==undefined? kv.temperature+' °C':null)+
-    row('Last fix (device UTC)', p?p.dev_time:null)+
-    row('Received', p?p.recv_ts:null)+
+    row('Last fix', p?localTime(p.dev_time):null)+
+    row('Received', p?localTime(p.recv_ts):null)+
     row('SIM balance', kv.sim_balance)+
     row('Cell MCC,MNC,LAC,CID', kv.last_cell)+
     row('Firmware', kv.version)+
     row('Device id', kv.device_id)+
-    row('Last seen', kv.last_seen)+
+    row('Last seen', localTime(kv.last_seen))+
+    row('Times shown in', TZ)+
     row('Fixes stored', d.positions);
   if(p){ var ll=[p.lat,p.lon];
     if(!marker){marker=L.marker(ll).addTo(map);} else {marker.setLatLng(ll);}
