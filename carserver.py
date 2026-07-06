@@ -135,6 +135,25 @@ class CarServer:
         self.loglock = threading.Lock()
         self.logfh = open(os.path.join(capdir, "carserver_%s.log" % ts), "a", encoding="utf-8")
         self.unsupfh = open(os.path.join(capdir, "unsupported_%s.jsonl" % ts), "a", encoding="utf-8")
+        self.backfill()
+
+    def backfill(self):
+        """On startup, seed kv voltage/temperature from the most recent stored
+        frames so the dashboard shows last-known values immediately (rather than
+        blank until the next, possibly minutes-away, telemetry frame)."""
+        cur = self.db.cursor()
+        r = cur.execute("SELECT hex FROM telemetry WHERE type='0x0110' ORDER BY id DESC LIMIT 1").fetchone()
+        if r:
+            d = bytes.fromhex(r[0])
+            if len(d) >= 16:
+                self._kv(cur, "main_voltage", round((d[14] | (d[15] << 8)) * 0.01926, 2))
+                self._kv(cur, "backup_voltage", round((d[12] | (d[13] << 8)) * 0.04051, 2))
+        r = cur.execute("SELECT hex FROM telemetry WHERE type='0x0270' ORDER BY id DESC LIMIT 1").fetchone()
+        if r:
+            d = bytes.fromhex(r[0])
+            if len(d) >= 3:
+                self._kv(cur, "temperature", d[2] - 256 if d[2] >= 128 else d[2])
+        self.db.commit()
 
     def log(self, msg):
         line = "[%s] %s" % (now(), msg)
