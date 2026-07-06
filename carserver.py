@@ -143,6 +143,7 @@ class CarServer:
         self.db.commit()
         self._jn = 0
         self._jlast = {}
+        self._sigN = []
         self.dblock = threading.Lock()
         self._trace_last = {}
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -197,16 +198,20 @@ class CarServer:
     def _cell_signal(self, cur, txt):
         """0x0230 LBS 'MCC,MNC,LAC,CID-N,99': the -N suffix is a per-cell signal index.
         Its mapping to the app's displayed dBm is non-standard; refit to three paired app
-        readings (N=13->75, N=18->65, N=21->47) => dBm ~= 120.5 - 3.5N (nails the two
-        verified points N=13 and N=21 exactly). Device-only APPROXIMATION -- the app's
-        exact value is a vendor server-side derivation, not on the wire. ",99" = CSQ-unknown."""
+        readings (N=13->75, 18->65, 21->47, 25->39) => dBm ~= 114 - 3N (hits the two
+        freshest stable-N points N=13 and N=25 exactly; the mid points ~+/-5, noisy
+        driving samples). Device-only APPROXIMATION -- the app's exact value is a vendor
+        server-side derivation, not on the wire, so it stays +/- a few dB. ",99" = CSQ-unknown."""
         try:
             parts = txt.strip().split(",")
             if len(parts) >= 4 and "-" in parts[3]:
                 n = int(parts[3].rpartition("-")[2])
                 if 0 <= n <= 31:
-                    self._kv(cur, "signal_csq", n)
-                    self._kv(cur, "signal_dbm", max(1, min(113, round(120.5 - 3.5 * n))))
+                    self._sigN.append(n)
+                    del self._sigN[:-5]  # keep last 5
+                    m = sorted(self._sigN)[len(self._sigN) // 2]  # rolling median damps per-scan jitter
+                    self._kv(cur, "signal_csq", m)
+                    self._kv(cur, "signal_dbm", max(1, min(113, round(114 - 3 * m))))
         except (ValueError, IndexError):
             pass
 
