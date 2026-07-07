@@ -172,11 +172,10 @@ class CarServer:
             d = bytes.fromhex(r[0])
             if len(d) >= 16:
                 d8 = d[8] | (d[9] << 8); d10 = d[10] | (d[11] << 8)
-                self._kv(cur, "pin_voltage", round((d[12] | (d[13] << 8)) * 0.02857, 2))
                 self._kv(cur, "backup_voltage", round(d[14] * 0.03176, 2))
-                self._kv(cur, "status_word", "%04x %04x" % (d8, d10))
+                self._kv(cur, "status_word", "%04x %04x %02x" % (d8, d10, d[15]))
                 self._kv(cur, "armed", "armed" if (d8 & 0x0200) else "disarmed")
-                self._kv(cur, "ignition", "on" if (d10 & 0x2000) else "off")
+                self._kv(cur, "ignition", "off" if (d[15] & 0x02) else "on")
                 self._kv(cur, "moving", "yes" if (d10 & 0x0010) else "no")
         r = cur.execute("SELECT hex FROM telemetry WHERE type='0x0270' ORDER BY id DESC LIMIT 1").fetchone()
         if r:
@@ -196,8 +195,7 @@ class CarServer:
     # dashboard-graph metrics: (metric name in `metrics` table, kv key it comes from)
     METRIC_KEYS = (("main_voltage", "main_voltage"), ("temperature", "temperature"),
                    ("balance", "sim_balance"), ("signal_dbm", "signal_dbm"),
-                   ("satellites", "satellites"), ("backup_voltage", "backup_voltage"),
-                   ("tag_voltage", "pin_voltage"))
+                   ("satellites", "satellites"), ("backup_voltage", "backup_voltage"))
 
     @staticmethod
     def _num(v):
@@ -227,7 +225,6 @@ class CarServer:
         jobs = (
             ("main_voltage", "0x0250", lambda d: round(d[1] * 0.13138, 2) if len(d) >= 2 else None),
             ("backup_voltage", "0x0110", lambda d: round(d[14] * 0.03176, 2) if len(d) >= 16 else None),
-            ("tag_voltage", "0x0110", lambda d: round((d[12] | (d[13] << 8)) * 0.02857, 2) if len(d) >= 16 else None),
             ("temperature", "0x0270", lambda d: (d[2] - 256 if d[2] >= 128 else d[2]) if len(d) >= 3 else None),
         )
         for name, typ, fn in jobs:
@@ -336,19 +333,16 @@ class CarServer:
                 if typ == 0x0110 and len(data) >= 16:
                     d8 = data[8] | (data[9] << 8)
                     d10 = data[10] | (data[11] << 8)
-                    tag = data[12] | (data[13] << 8)
-                    self._kv(cur, "status_word", "%04x %04x" % (d8, d10))
-                    self._kv(cur, "pin_raw", tag)
-                    self._kv(cur, "pin_voltage", round(tag * 0.02857, 2))
+                    self._kv(cur, "status_word", "%04x %04x %02x" % (d8, d10, data[15]))
+                    # data[12] swings 7-158 even when parked -> NOT a stable tag voltage
+                    # (carries other data); kept raw only, no voltage published.
+                    self._kv(cur, "pin_raw", data[12] | (data[13] << 8))
                     # data[14] = 125 (constant) -> internal BACKUP battery, stable ~3.97V.
-                    # (MAIN supply is NOT here -- it's 0x0250 byte1, which rises with the
-                    # alternator; data[14:16] high byte is just a parked/ignition flag.)
                     self._kv(cur, "backup_voltage", round(data[14] * 0.03176, 2))
-                    # status bits (verified vs ground truth: parked=armed/ign-off 0200/0003,
-                    # driving=disarmed/ign-on 0408/2013): armed=d8&0x0200, ign=d10&0x2000,
-                    # moving=d10&0x0010.
                     self._kv(cur, "armed", "armed" if (d8 & 0x0200) else "disarmed")
-                    self._kv(cur, "ignition", "on" if (d10 & 0x2000) else "off")
+                    # ignition: data[15] bit 0x02 = OFF/parked (reliable), 0x00 = ON.
+                    # (d10 bit 0x2000 was WRONG -- it stays set even when parked/ign-off.)
+                    self._kv(cur, "ignition", "off" if (data[15] & 0x02) else "on")
                     self._kv(cur, "moving", "yes" if (d10 & 0x0010) else "no")
                 elif typ == 0x0270 and len(data) >= 3:
                     t = data[2] - 256 if data[2] >= 128 else data[2]
@@ -413,9 +407,9 @@ class CarServer:
                                                    " %dsat" % g["sats"] if g["sats"] is not None else "")
             if typ == 0x0110 and len(d) >= 16:
                 d8 = d[8] | (d[9] << 8); d10 = d[10] | (d[11] << 8)
-                return "rec bk=%.2fV tag=%.2fV %s ign=%s%s" % (
-                    d[14] * 0.03176, (d[12] | (d[13] << 8)) * 0.02857,
-                    "ARMED" if (d8 & 0x0200) else "disarmed", "on" if (d10 & 0x2000) else "off",
+                return "rec bk=%.2fV d12=%d %s ign=%s%s" % (
+                    d[14] * 0.03176, d[12],
+                    "ARMED" if (d8 & 0x0200) else "disarmed", "off" if (d[15] & 0x02) else "on",
                     " moving" if (d10 & 0x0010) else "")
             if typ == 0x0230:
                 return "cell %s" % d.decode("ascii", "replace")[:24]

@@ -104,14 +104,21 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #ghint{font-size:11px;color:#aaa;margin-top:6px}
  .u-legend{font-size:12px}
  /* control buttons */
- #controls{padding:10px 16px;border-top:1px solid #e3e3e3;background:#fff}
- .chdr{font-weight:600;font-size:13px;color:#555;margin-bottom:6px}
- .cbtns{display:flex;flex-wrap:wrap;gap:6px}
- .cbtns button{border:1px solid #ccc;background:#f7f7f7;border-radius:7px;padding:6px 12px;cursor:pointer;font-size:13px}
+ #menubtn{background:none;border:none;font-size:20px;cursor:pointer;color:#333;padding:0 8px 0 0;line-height:1}
+ #sidebar{position:fixed;top:0;left:0;height:100%;width:250px;max-width:80vw;background:#fff;box-shadow:2px 0 14px rgba(0,0,0,.25);transform:translateX(-100%);transition:transform .2s ease;z-index:1100;padding:14px 16px;overflow:auto}
+ #sidebar.open{transform:translateX(0)}
+ #sbback{display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:1099}
+ #sbback.open{display:block}
+ .sbhead{display:flex;justify-content:space-between;align-items:center;font-weight:700;font-size:15px;margin-bottom:2px}
+ .sbhead button{background:none;border:none;font-size:18px;color:#999;cursor:pointer}
+ .cbtns{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+ .cbtns button{border:1px solid #ccc;background:#f7f7f7;border-radius:7px;padding:8px 12px;cursor:pointer;font-size:13px;text-align:left}
  .cbtns button:hover{background:#eee} .cbtns button:active{background:#dcdcdc}
- #ctoast{font-size:12px;color:#777;margin-top:7px;min-height:16px}
+ #ctoast{font-size:12px;color:#777;margin-top:10px;min-height:16px}
+ .gtip{position:absolute;pointer-events:none;background:#0b6;color:#fff;font-size:11px;font-weight:600;padding:1px 6px;border-radius:4px;transform:translate(10px,-26px);white-space:nowrap;z-index:5}
 </style></head><body>
 <div id="top">
+  <button id="menubtn" title="Controls">☰</button>
   <div class="brand">Fiesta<small id="online">connecting…</small></div>
 </div>
 <div id="map"></div>
@@ -120,8 +127,10 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
   <div id="addr">locating…</div>
   <div id="evt"></div>
 </div>
-<div id="controls">
-  <div class="chdr">Controls <span style="font-weight:400;color:#aaa">(not wired to the device yet)</span></div>
+<div id="sbback"></div>
+<div id="sidebar">
+  <div class="sbhead"><span>Controls</span><button id="sbclose" title="close">✕</button></div>
+  <div style="font-size:11px;color:#aaa">not wired to the device yet</div>
   <div class="cbtns">
     <button data-cmd="search">Search car</button>
     <button data-cmd="arm">Arm</button>
@@ -139,7 +148,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <div id="jwrap"><div id="jlist"></div></div>
 <div id="gmodal" onclick="if(event.target===this)closeGraph()">
   <div id="gbox"><div id="ghead"><span id="gtitle"></span><span id="gclose" onclick="closeGraph()">✕</span></div>
-  <div id="gperiods"><button data-h="24">24h</button><button data-h="168">7d</button><button data-h="720">30d</button><button data-h="2160">90d</button></div>
+  <div id="gperiods"><button data-h="12">12h</button><button data-h="24">24h</button><button data-h="36">36h</button><button data-h="168">7d</button><button data-h="720">30d</button><button data-h="2160">90d</button></div>
   <div id="gchart"></div>
   <div id="ghint">drag across the chart to zoom · double-click to reset</div></div>
 </div>
@@ -219,8 +228,7 @@ async function tick(){
     chip(ICONS.money, num(kv.sim_balance), '', 'balance', 'balance')+
     chip(ICONS.signal, kv.signal_dbm, ' dBm', 'signal', 'signal_dbm')+
     chip(ICONS.sat, kv.satellites, '', 'sats', 'satellites')+
-    chip(ICONS.backup, kv.backup_voltage, ' V', 'backup', 'backup_voltage')+
-    chip(ICONS.pin, kv.pin_voltage, ' V', 'tag', 'tag_voltage'));
+    chip(ICONS.backup, kv.backup_voltage, ' V', 'backup', 'backup_voltage'));
   // armed state (decoded into kv.armed when available)
   var a=document.getElementById('armed'), av=(kv.armed||'').toLowerCase();
   if(av.indexOf('arm')>=0 && av.indexOf('dis')<0){ a.innerHTML=ICONS.lock+'Armed'; a.className='on'; }
@@ -258,9 +266,9 @@ async function tick(){
   }).join('');
  }catch(e){ document.getElementById('online').textContent='error: '+e; }
 }
-var uplotInst=null, gMetric=null, gLabel=null, gHours=24;
+var uplotInst=null, gMetric=null, gLabel=null, gHours=36;
 function openGraph(metric,label){
-  gMetric=metric; gLabel=label; gHours=24;
+  gMetric=metric; gLabel=label; gHours=36;
   document.getElementById('gtitle').textContent=label;
   document.getElementById('gmodal').style.display='flex';
   markPeriod(); loadGraph();
@@ -288,14 +296,26 @@ function loadGraph(){
       var w=Math.max(300,(chart.clientWidth||640));
       var opts={ width:w, height:300, scales:{x:{time:true}},
         series:[ {}, {label:gLabel, stroke:'#0b6', width:2} ],
-        cursor:{ drag:{x:true,y:false} } };
+        cursor:{ drag:{x:true,y:false} },
+        hooks:{
+          init:[function(u){ var t=document.createElement('div'); t.className='gtip'; t.style.display='none'; u.over.appendChild(t); u.__tip=t; }],
+          setCursor:[function(u){ var i=u.cursor.idx, t=u.__tip; if(!t) return;
+            if(i==null||u.cursor.left<0){ t.style.display='none'; return; }
+            var y=u.data[1][i];
+            t.textContent=(y==null?'—':y);
+            t.style.display='block'; t.style.left=u.cursor.left+'px'; t.style.top=u.cursor.top+'px';
+          }] } };
       uplotInst=new uPlot(opts,data,chart);
     })
     .catch(function(e){ chart.innerHTML='<div style="padding:40px;color:#c0392b">error: '+e+'</div>'; });
 }
-document.getElementById('controls').addEventListener('click',function(e){
+document.getElementById('sidebar').addEventListener('click',function(e){
   if(e.target.tagName==='BUTTON'&&e.target.getAttribute('data-cmd')){ sendCommand(e.target.getAttribute('data-cmd'), e.target.textContent); }
 });
+function toggleSidebar(o){ document.getElementById('sidebar').classList.toggle('open',o); document.getElementById('sbback').classList.toggle('open',o); }
+document.getElementById('menubtn').onclick=function(){toggleSidebar(true);};
+document.getElementById('sbclose').onclick=function(){toggleSidebar(false);};
+document.getElementById('sbback').onclick=function(){toggleSidebar(false);};
 function sendCommand(cmd,label){
   var t=document.getElementById('ctoast'); t.textContent=label+' …';
   fetch('/api/command?cmd='+encodeURIComponent(cmd),{cache:'no-store'})
