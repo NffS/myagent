@@ -279,8 +279,12 @@ async function tick(){
   var tr=await (await fetch('/api/track',{cache:'no-store'})).json();
   trackLayer.clearLayers();
   for(var i=1;i<tr.length;i++){
+    var kmh=tr[i][2], tt=tr[i][3];
     L.polyline([[tr[i-1][0],tr[i-1][1]],[tr[i][0],tr[i][1]]],
-      {color:speedColor(tr[i][2]),weight:4,opacity:.9}).addTo(trackLayer);
+      {color:speedColor(kmh),weight:5,opacity:.9})
+      .bindTooltip('<b>'+(kmh||0).toFixed(1)+' km/h</b>'+(tt?'<br><span style="color:#888;font-size:11px">'+timeOnly(tt)+'</span>':''),
+                   {sticky:true,direction:'top'})
+      .addTo(trackLayer);
   }
   if(p){ var ll=[p.lat,p.lon];
     var moving=(kv.moving==='yes')||((d.speed_kmh||0)>3);
@@ -437,8 +441,8 @@ class Handler(BaseHTTPRequestHandler):
                        "speed_kmh": round(pos["speed_knots"] * 1.852, 1) if pos else None}
                 self._send(200, json.dumps(out), "application/json")
             elif self.path.startswith("/api/track"):
-                rows = q("SELECT lat,lon,speed_knots FROM position ORDER BY id DESC LIMIT 400")
-                self._send(200, json.dumps([[r[0], r[1], round((r[2] or 0) * 1.852, 1)]
+                rows = q("SELECT lat,lon,speed_knots,COALESCE(dev_time,recv_ts) FROM position ORDER BY id DESC LIMIT 400")
+                self._send(200, json.dumps([[r[0], r[1], round((r[2] or 0) * 1.852, 1), r[3]]
                                             for r in rows][::-1]), "application/json")
             elif self.path.startswith("/api/journal"):
                 rows = q("SELECT ts,dir,summary FROM journal ORDER BY id DESC LIMIT 60")
