@@ -73,17 +73,19 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #mapwrap{position:relative;flex:1 1 auto;min-height:200px}
  #map{position:absolute;inset:0;width:100%;height:100%}
  /* big state badges overlaid on the map */
- /* straddle the map/panel seam: ~30px on the map, ~26px dipping onto the panel */
- #mapbadges{position:absolute;left:12px;bottom:-26px;z-index:800;display:flex;gap:12px;pointer-events:none}
+ /* straddle the map/panel seam: icon on the seam, caption below it on the panel */
+ #mapbadges{position:absolute;left:12px;bottom:-40px;z-index:800;display:flex;gap:14px;pointer-events:none}
+ .mbadge{display:flex;flex-direction:column;align-items:center;gap:3px}
  .mbadge .disc{width:56px;height:56px;border-radius:18px;display:flex;align-items:center;justify-content:center;color:#fff;background:#9e9e9e;box-shadow:0 3px 12px rgba(0,0,0,.32)}
  .mbadge .disc svg{width:30px;height:30px;stroke-width:2}
+ .mbadge .cap{font-size:11px;font-weight:600;color:#444;white-space:nowrap;line-height:1.1}
  .mbadge.on .disc{background:#12a594}
  .mbadge.off .disc{background:#2a6fd6}
  .mbadge.alarm .disc{background:#d32f2f}
  .mbadge.valet .disc{background:#e08600}
  .mbadge.unk .disc,.mbadge.ignoff .disc{background:#9e9e9e}
  /* bottom address / armed bar */
- #bottom{padding:34px 16px 9px;background:#fff;border-top:1px solid #e3e3e3;
+ #bottom{padding:46px 16px 9px;background:#fff;border-top:1px solid #e3e3e3;
          display:flex;flex-direction:column;gap:4px}
  .brow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
  #statetime{font-size:12.5px;color:#666}
@@ -139,8 +141,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <div id="mapwrap">
   <div id="map"></div>
   <div id="mapbadges">
-    <div class="mbadge unk" id="mb_armed"><div class="disc"></div></div>
-    <div class="mbadge unk" id="mb_ign"><div class="disc"></div></div>
+    <div class="mbadge unk" id="mb_armed"><div class="disc"></div><div class="cap"></div></div>
+    <div class="mbadge unk" id="mb_ign"><div class="disc"></div><div class="cap"></div></div>
   </div>
 </div>
 <div id="bottom">
@@ -260,15 +262,15 @@ async function tick(){
     chip(ICONS.backup, kv.backup_voltage, ' V', 'backup', 'backup_voltage')+
     chip(ICONS.pin, kv.pin_voltage, ' V', 'tag', 'tag_voltage'));
   // armed state (decoded into kv.armed when available)
-  var a=document.getElementById('mb_armed'), ad=a.firstElementChild, av=(kv.armed||'').toLowerCase();
-  if(av==='valet'){ ad.innerHTML=ICONS.unlock; a.title='Valet mode'; a.className='mbadge valet'; }
-  else if(av.indexOf('arm')>=0 && av.indexOf('dis')<0){ ad.innerHTML=ICONS.lock; a.title='Armed'; a.className='mbadge on'; }
-  else if(av.indexOf('dis')>=0 || av==='off'){ ad.innerHTML=ICONS.unlock; a.title='Disarmed'; a.className='mbadge off'; }
-  else { ad.innerHTML=ICONS.lock; a.title=''; a.className='mbadge unk'; }
-  var ig=document.getElementById('mb_ign'), igd=ig.firstElementChild, iv=(kv.ignition||'').toLowerCase();
-  if(iv==='on'){ igd.innerHTML=ICONS.key; ig.title='Ignition on'; ig.className='mbadge on'; }
-  else if(iv==='off'){ igd.innerHTML=ICONS.key; ig.title='Ignition off'; ig.className='mbadge ignoff'; }
-  else { igd.innerHTML=ICONS.key; ig.title=''; ig.className='mbadge unk'; }
+  var a=document.getElementById('mb_armed'), ad=a.firstElementChild, ac=a.lastElementChild, av=(kv.armed||'').toLowerCase();
+  if(av==='valet'){ ad.innerHTML=ICONS.unlock; ac.textContent='Valet mode'; a.className='mbadge valet'; }
+  else if(av.indexOf('arm')>=0 && av.indexOf('dis')<0){ ad.innerHTML=ICONS.lock; ac.textContent='Armed'; a.className='mbadge on'; }
+  else if(av.indexOf('dis')>=0 || av==='off'){ ad.innerHTML=ICONS.unlock; ac.textContent='Disarmed'; a.className='mbadge off'; }
+  else { ad.innerHTML=ICONS.lock; ac.textContent='—'; a.className='mbadge unk'; }
+  var ig=document.getElementById('mb_ign'), igd=ig.firstElementChild, igc=ig.lastElementChild, iv=(kv.ignition||'').toLowerCase();
+  if(iv==='on'){ igd.innerHTML=ICONS.key; igc.textContent='Ignition on'; ig.className='mbadge on'; }
+  else if(iv==='off'){ igd.innerHTML=ICONS.key; igc.textContent='Ignition off'; ig.className='mbadge ignoff'; }
+  else { igd.innerHTML=ICONS.key; igc.textContent='—'; ig.className='mbadge unk'; }
   document.getElementById('statetime').textContent = kv.last_seen? localTime(kv.last_seen) : (p?localTime(p.dev_time||p.recv_ts):'');
   document.getElementById('evt').textContent =
     (p?'':'waiting for data')+
