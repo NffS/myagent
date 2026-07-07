@@ -79,7 +79,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  .mbadge .disc svg{width:30px;height:30px;stroke-width:2}
  .mbadge .cap{font-size:12px;font-weight:700;color:#fff;background:rgba(20,20,20,.6);padding:2px 9px;border-radius:10px;white-space:nowrap}
  .mbadge.on .disc{background:#12a594}
- .mbadge.off .disc{background:#c0392b}
+ .mbadge.off .disc{background:#2a6fd6}
+ .mbadge.alarm .disc{background:#d32f2f}
  .mbadge.valet .disc{background:#e08600}
  .mbadge.unk .disc,.mbadge.ignoff .disc{background:#9e9e9e}
  /* bottom address / armed bar */
