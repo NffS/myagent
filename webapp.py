@@ -84,6 +84,16 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  .mbadge.alarm .disc{background:#d32f2f}
  .mbadge.valet .disc{background:#e08600}
  .mbadge.unk .disc,.mbadge.ignoff .disc{background:#9e9e9e}
+ /* track time-range selector */
+ #trackbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 12px;background:#fff;border-bottom:1px solid #e3e3e3;font-size:12px}
+ #trackbar .tlabel{color:#888;font-weight:700;margin-right:2px}
+ #trackbar .tbtn{border:1px solid #ccc;background:#fff;border-radius:6px;padding:3px 9px;cursor:pointer;color:#444;white-space:nowrap;font-family:system-ui;font-size:12px}
+ #trackbar .tbtn:hover{border-color:#0b6}
+ #trackbar .tbtn.on{background:#0b6;color:#fff;border-color:#0b6}
+ #tbcustom{display:none;align-items:center;gap:4px}
+ #tbcustom.show{display:inline-flex}
+ #tbcustom input{font-size:12px;padding:2px 4px;border:1px solid #ccc;border-radius:5px}
+ #tbinfo{color:#999;margin-left:auto;white-space:nowrap;font-size:11px}
  /* bottom address / armed bar */
  #bottom{padding:46px 16px 9px;background:#fff;border-top:1px solid #e3e3e3;
          display:flex;flex-direction:column;gap:4px}
@@ -137,6 +147,22 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <div id="top">
   <button id="menubtn" title="Controls">☰</button>
   <div class="brand">Fiesta<small id="online">connecting…</small></div>
+</div>
+<div id="trackbar">
+  <span class="tlabel">Track</span>
+  <button class="tbtn on" data-mode="h:1">1 h</button>
+  <button class="tbtn" data-mode="h:24">24 h</button>
+  <button class="tbtn" data-mode="prevday">Yesterday</button>
+  <button class="tbtn" data-mode="prevweek">Prev. week</button>
+  <button class="tbtn" data-mode="prevmonth">Prev. month</button>
+  <button class="tbtn" data-mode="custom">Custom…</button>
+  <span id="tbcustom">
+    <input type="datetime-local" id="tbfrom">
+    <span style="color:#888">→</span>
+    <input type="datetime-local" id="tbto">
+    <button class="tbtn" id="tbapply">Apply</button>
+  </span>
+  <span id="tbinfo"></span>
 </div>
 <div id="mapwrap">
   <div id="map"></div>
@@ -242,6 +268,71 @@ async function geocode(lat,lon){
     if(j && j.display_name) document.getElementById('addr').textContent=j.display_name;
   }catch(e){}
 }
+// ---- track time-range selector ----
+var trackMode={type:'roll',h:1};   // default: last 1 hour
+function rangeEpochs(){
+  var now=Date.now();
+  if(trackMode.type==='roll') return [Math.floor((now-trackMode.h*3600000)/1000), Math.floor(now/1000)];
+  return [trackMode.from, trackMode.to];
+}
+function fmtEpoch(e){var d=new Date(e*1000);return z2(d.getDate())+'/'+z2(d.getMonth()+1)+'/'+d.getFullYear()+' '+z2(d.getHours())+':'+z2(d.getMinutes());}
+var lastTrackSig=null;
+async function drawTrack(fit){
+  var r=rangeEpochs(), tr;
+  try{ tr=await (await fetch('/api/track?from='+r[0]+'&to='+r[1],{cache:'no-store'})).json(); }catch(e){ return; }
+  var sig=tr.length+'|'+(tr[0]?tr[0][3]:'')+'|'+(tr.length?tr[tr.length-1][3]:'');
+  if(!fit && sig===lastTrackSig) return;   // unchanged -> keep layers (and any open tooltip)
+  lastTrackSig=sig;
+  trackLayer.clearLayers();
+  for(var i=1;i<tr.length;i++){
+    var kmh=tr[i][2], tt=tr[i][3];
+    L.polyline([[tr[i-1][0],tr[i-1][1]],[tr[i][0],tr[i][1]]],
+      {color:speedColor(kmh),weight:5,opacity:.9})
+      .bindTooltip('<b>'+(kmh||0).toFixed(1)+' km/h</b>'+(tt?'<br><span style="color:#888;font-size:11px">'+timeOnly(tt)+'</span>':''),
+                   {sticky:true,direction:'top'})
+      .addTo(trackLayer);
+  }
+  document.getElementById('tbinfo').textContent = tr.length
+    ? (tr.length+' pts · '+fmtEpoch(r[0])+' → '+fmtEpoch(r[1]))
+    : ('no track · '+fmtEpoch(r[0])+' → '+fmtEpoch(r[1]));
+  if(fit && tr.length){ try{ map.fitBounds(L.latLngBounds(tr.map(function(pt){return [pt[0],pt[1]];})),{padding:[30,30],maxZoom:17}); }catch(e){} }
+}
+function setTrackMode(m,btn){
+  trackMode=m;
+  document.querySelectorAll('#trackbar .tbtn[data-mode]').forEach(function(b){b.classList.toggle('on', b===btn);});
+  drawTrack(true);
+}
+(function(){
+  var tb=document.getElementById('trackbar'); if(!tb) return;
+  var midnight=function(x){var d=new Date(x);d.setHours(0,0,0,0);return d;};
+  var toLocalInput=function(d){return d.getFullYear()+'-'+z2(d.getMonth()+1)+'-'+z2(d.getDate())+'T'+z2(d.getHours())+':'+z2(d.getMinutes());};
+  document.getElementById('tbfrom').value=toLocalInput(new Date(Date.now()-86400000));
+  document.getElementById('tbto').value=toLocalInput(new Date());
+  tb.addEventListener('click',function(e){
+    var b=e.target.closest&&e.target.closest('button.tbtn'); if(!b) return;
+    var mode=b.getAttribute('data-mode'); if(!mode) return;
+    var cust=document.getElementById('tbcustom');
+    if(mode==='custom'){ cust.classList.toggle('show'); return; }
+    cust.classList.remove('show');
+    var now=new Date(), start, end;
+    if(mode==='h:1') return setTrackMode({type:'roll',h:1},b);
+    if(mode==='h:24') return setTrackMode({type:'roll',h:24},b);
+    if(mode==='prevday'){ end=midnight(now).getTime(); start=end-86400000; }
+    else if(mode==='prevweek'){ var m0=midnight(now); var dow=(m0.getDay()+6)%7; var thisMon=m0.getTime()-dow*86400000; end=thisMon; start=thisMon-7*86400000; }
+    else if(mode==='prevmonth'){ end=new Date(now.getFullYear(),now.getMonth(),1).getTime(); start=new Date(now.getFullYear(),now.getMonth()-1,1).getTime(); }
+    else return;
+    setTrackMode({type:'fixed',from:Math.floor(start/1000),to:Math.floor(end/1000)},b);
+  });
+  document.getElementById('tbapply').addEventListener('click',function(){
+    var f=document.getElementById('tbfrom').value, t=document.getElementById('tbto').value;
+    var fe=Math.floor(new Date(f).getTime()/1000), te=Math.floor(new Date(t).getTime()/1000);
+    if(!f||!t||isNaN(fe)||isNaN(te)||te<=fe){ document.getElementById('tbinfo').textContent='pick a valid start & end'; return; }
+    trackMode={type:'fixed',from:fe,to:te};
+    document.querySelectorAll('#trackbar .tbtn[data-mode]').forEach(function(b){b.classList.remove('on');});
+    var cb=document.querySelector('#trackbar .tbtn[data-mode="custom"]'); if(cb) cb.classList.add('on');
+    drawTrack(true);
+  });
+})();
 async function tick(){
  try{
   try{ var bld=(await (await fetch('/api/build',{cache:'no-store'})).text()).trim(); if(bld&&bld!==BUILD){ location.reload(); return; } }catch(e){}
@@ -276,19 +367,10 @@ async function tick(){
     (p?'':'waiting for data')+
     (d.speed_kmh!=null? d.speed_kmh+' km/h':'')+
     (kv.moving==='yes'?' · moving':'');
-  var tr=await (await fetch('/api/track',{cache:'no-store'})).json();
-  trackLayer.clearLayers();
-  for(var i=1;i<tr.length;i++){
-    var kmh=tr[i][2], tt=tr[i][3];
-    L.polyline([[tr[i-1][0],tr[i-1][1]],[tr[i][0],tr[i][1]]],
-      {color:speedColor(kmh),weight:5,opacity:.9})
-      .bindTooltip('<b>'+(kmh||0).toFixed(1)+' km/h</b>'+(tt?'<br><span style="color:#888;font-size:11px">'+timeOnly(tt)+'</span>':''),
-                   {sticky:true,direction:'top'})
-      .addTo(trackLayer);
-  }
+  if(trackMode.type==='roll'){ await drawTrack(false); }
   if(p){ var ll=[p.lat,p.lon];
     var moving=(kv.moving==='yes')||((d.speed_kmh||0)>3);
-    var hd=(tr.length>=2)?bearing(tr[tr.length-2],tr[tr.length-1]):null;
+    var hd=(p.course!=null&&!isNaN(p.course))?p.course:null;
     if(!marker){marker=L.marker(ll).addTo(map);}
     marker.setLatLng(ll);
     marker.setIcon(moving&&hd!=null?arrowIcon(hd):pinIcon);
@@ -441,9 +523,28 @@ class Handler(BaseHTTPRequestHandler):
                        "speed_kmh": round(pos["speed_knots"] * 1.852, 1) if pos else None}
                 self._send(200, json.dumps(out), "application/json")
             elif self.path.startswith("/api/track"):
-                rows = q("SELECT lat,lon,speed_knots,COALESCE(dev_time,recv_ts) FROM position ORDER BY id DESC LIMIT 400")
+                qs = parse_qs(urlparse(self.path).query)
+                def _pe(k):
+                    v = (qs.get(k) or [None])[0]
+                    try:
+                        return int(float(v))
+                    except (TypeError, ValueError):
+                        return None
+                EPOCH = datetime.datetime(1970, 1, 1)
+                to = _pe("to"); frm = _pe("from")
+                to_dt = (EPOCH + datetime.timedelta(seconds=to)) if to is not None else datetime.datetime.utcnow()
+                frm_dt = (EPOCH + datetime.timedelta(seconds=frm)) if frm is not None else (to_dt - datetime.timedelta(hours=1))
+                frm_s = frm_dt.strftime("%Y-%m-%d %H:%M:%S")
+                to_s = to_dt.strftime("%Y-%m-%d %H:%M:%S") + ".999999"
+                MAXP = 3000  # cap points sent to the browser; even sampling for big ranges
+                rows = q("SELECT lat,lon,speed_knots,t FROM ("
+                         "SELECT lat,lon,speed_knots,COALESCE(dev_time,recv_ts) t,"
+                         "(ROW_NUMBER() OVER (ORDER BY id)-1) rn, COUNT(*) OVER () cnt "
+                         "FROM position WHERE recv_ts>=? AND recv_ts<=?) "
+                         "WHERE rn % max(1,(cnt+?-1)/?)=0 ORDER BY rn",
+                         (frm_s, to_s, MAXP, MAXP))
                 self._send(200, json.dumps([[r[0], r[1], round((r[2] or 0) * 1.852, 1), r[3]]
-                                            for r in rows][::-1]), "application/json")
+                                            for r in rows]), "application/json")
             elif self.path.startswith("/api/journal"):
                 rows = q("SELECT ts,dir,summary FROM journal ORDER BY id DESC LIMIT 60")
                 self._send(200, json.dumps([{"ts": r[0], "dir": r[1], "summary": r[2]}
