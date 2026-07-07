@@ -233,7 +233,8 @@ async function tick(){
     chip(ICONS.money, num(kv.sim_balance), '', 'balance', 'balance')+
     chip(ICONS.signal, kv.signal_dbm, ' dBm', 'signal', 'signal_dbm')+
     chip(ICONS.sat, kv.satellites, '', 'sats', 'satellites')+
-    chip(ICONS.backup, kv.backup_voltage, ' V', 'backup', 'backup_voltage'));
+    chip(ICONS.backup, kv.backup_voltage, ' V', 'backup', 'backup_voltage')+
+    chip(ICONS.pin, kv.pin_voltage, ' V', 'tag', 'tag_voltage'));
   // armed state (decoded into kv.armed when available)
   var a=document.getElementById('armed'), av=(kv.armed||'').toLowerCase();
   if(av.indexOf('arm')>=0 && av.indexOf('dis')<0){ a.innerHTML=ICONS.lock+'Armed'; a.className='on'; }

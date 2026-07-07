@@ -177,6 +177,12 @@ class CarServer:
                 self._kv(cur, "armed", "armed" if (d8 & 0x0200) else "disarmed")
                 self._kv(cur, "ignition", "off" if (d[15] & 0x02) else "on")
                 self._kv(cur, "moving", "yes" if (d10 & 0x0010) else "no")
+        # seed tag voltage from the most recent in-cluster (90-106) 0x0110 record
+        for (hx,) in cur.execute("SELECT hex FROM telemetry WHERE type='0x0110' ORDER BY id DESC LIMIT 40"):
+            b = bytes.fromhex(hx)
+            if len(b) >= 16 and 90 <= b[12] <= 106:
+                self._kv(cur, "pin_voltage", round(b[12] * 0.02755, 2))
+                break
         r = cur.execute("SELECT hex FROM telemetry WHERE type='0x0270' ORDER BY id DESC LIMIT 1").fetchone()
         if r:
             d = bytes.fromhex(r[0])
@@ -195,7 +201,8 @@ class CarServer:
     # dashboard-graph metrics: (metric name in `metrics` table, kv key it comes from)
     METRIC_KEYS = (("main_voltage", "main_voltage"), ("temperature", "temperature"),
                    ("balance", "sim_balance"), ("signal_dbm", "signal_dbm"),
-                   ("satellites", "satellites"), ("backup_voltage", "backup_voltage"))
+                   ("satellites", "satellites"), ("backup_voltage", "backup_voltage"),
+                   ("tag_voltage", "pin_voltage"))
 
     @staticmethod
     def _num(v):
@@ -225,6 +232,7 @@ class CarServer:
         jobs = (
             ("main_voltage", "0x0250", lambda d: round(d[1] * 0.13138, 2) if len(d) >= 2 else None),
             ("backup_voltage", "0x0110", lambda d: round(d[14] * 0.03176, 2) if len(d) >= 16 else None),
+            ("tag_voltage", "0x0110", lambda d: round(d[12] * 0.02755, 2) if len(d) >= 16 and 90 <= d[12] <= 106 else None),
             ("temperature", "0x0270", lambda d: (d[2] - 256 if d[2] >= 128 else d[2]) if len(d) >= 3 else None),
         )
         for name, typ, fn in jobs:
@@ -334,9 +342,13 @@ class CarServer:
                     d8 = data[8] | (data[9] << 8)
                     d10 = data[10] | (data[11] << 8)
                     self._kv(cur, "status_word", "%04x %04x %02x" % (d8, d10, data[15]))
-                    # data[12] swings 7-158 even when parked -> NOT a stable tag voltage
-                    # (carries other data); kept raw only, no voltage published.
                     self._kv(cur, "pin_raw", data[12] | (data[13] << 8))
+                    # data[12] is TIME-MULTIPLEXED: the ~90-106 cluster is the tag/analog
+                    # voltage (98 -> 2.70V); other values (~39-41 + transients) are a 2nd
+                    # signal on the same byte. Publish tag only from the tag cluster so it
+                    # stays stable (ignore the interleaved other-signal readings).
+                    if 90 <= data[12] <= 106:
+                        self._kv(cur, "pin_voltage", round(data[12] * 0.02755, 2))
                     # data[14] = 125 (constant) -> internal BACKUP battery, stable ~3.97V.
                     self._kv(cur, "backup_voltage", round(data[14] * 0.03176, 2))
                     self._kv(cur, "armed", "armed" if (d8 & 0x0200) else "disarmed")
@@ -407,8 +419,9 @@ class CarServer:
                                                    " %dsat" % g["sats"] if g["sats"] is not None else "")
             if typ == 0x0110 and len(d) >= 16:
                 d8 = d[8] | (d[9] << 8); d10 = d[10] | (d[11] << 8)
-                return "rec bk=%.2fV d12=%d %s ign=%s%s" % (
-                    d[14] * 0.03176, d[12],
+                tagv = ("tag=%.2fV" % (d[12] * 0.02755)) if 90 <= d[12] <= 106 else ("d12=%d" % d[12])
+                return "rec bk=%.2fV %s %s ign=%s%s" % (
+                    d[14] * 0.03176, tagv,
                     "ARMED" if (d8 & 0x0200) else "disarmed", "off" if (d[15] & 0x02) else "on",
                     " moving" if (d10 & 0x0010) else "")
             if typ == 0x0230:
