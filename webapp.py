@@ -188,7 +188,9 @@ function arrowIcon(deg){return L.divIcon({className:'',iconSize:[30,30],iconAnch
   html:'<div style="transform:rotate('+deg+'deg)"><svg viewBox="0 0 24 24" width="30" height="30">'+
   '<path d="M12 2l6 18-6-4-6 4z" fill="#1565c0" stroke="#fff" stroke-width="1.3" stroke-linejoin="round"/></svg></div>'});}
 var TZ=Intl.DateTimeFormat().resolvedOptions().timeZone||'local';
-function localTime(s){ if(!s) return '-'; var d=new Date(String(s).replace(' ','T')+'Z'); return isNaN(d.getTime())?s:d.toLocaleString(); }
+function z2(n){return (n<10?'0':'')+n;}
+function localTime(s){ if(!s) return '-'; var d=new Date(String(s).replace(' ','T')+'Z'); if(isNaN(d.getTime())) return s;
+  return z2(d.getDate())+'/'+z2(d.getMonth()+1)+'/'+d.getFullYear()+', '+z2(d.getHours())+':'+z2(d.getMinutes())+':'+z2(d.getSeconds()); }
 function timeOnly(s){ if(!s) return ''; var d=new Date(String(s).replace(' ','T')+'Z'); return isNaN(d.getTime())?s:d.toLocaleTimeString(); }
 function num(s){ var m=String(s==null?'':s).match(/-?[\\d.]+/); return m?m[0]:null; }
 // inline line-art pictograms (stroke = currentColor) — no emoji
@@ -317,6 +319,8 @@ function loadGraph(){
       var w=Math.max(300,(chart.clientWidth||640));
       var opts={ width:w, height:300, scales:{x:{time:true}},
         series:[ {}, {label:gLabel, stroke:'#0b6', width:2} ],
+        axes:[ {values:function(u,sp){return sp.map(function(v){var d=new Date(v*1000);
+          return (d.getHours()===0&&d.getMinutes()===0)?(z2(d.getDate())+'/'+z2(d.getMonth()+1)):(z2(d.getHours())+':'+z2(d.getMinutes()));});}}, {} ],
         cursor:{ drag:{x:true,y:false} },
         hooks:{
           init:[function(u){ var t=document.createElement('div'); t.className='gtip'; t.style.display='none'; u.over.appendChild(t); u.__tip=t; }],
