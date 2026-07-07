@@ -103,6 +103,13 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #gchart{min-height:240px}
  #ghint{font-size:11px;color:#aaa;margin-top:6px}
  .u-legend{font-size:12px}
+ /* control buttons */
+ #controls{padding:10px 16px;border-top:1px solid #e3e3e3;background:#fff}
+ .chdr{font-weight:600;font-size:13px;color:#555;margin-bottom:6px}
+ .cbtns{display:flex;flex-wrap:wrap;gap:6px}
+ .cbtns button{border:1px solid #ccc;background:#f7f7f7;border-radius:7px;padding:6px 12px;cursor:pointer;font-size:13px}
+ .cbtns button:hover{background:#eee} .cbtns button:active{background:#dcdcdc}
+ #ctoast{font-size:12px;color:#777;margin-top:7px;min-height:16px}
 </style></head><body>
 <div id="top">
   <div class="brand">Fiesta<small id="online">connecting…</small></div>
@@ -112,6 +119,21 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
   <div class="brow"><span id="armed" class="unk">—</span><span id="ign" class="unk">—</span><span id="statetime"></span></div>
   <div id="addr">locating…</div>
   <div id="evt"></div>
+</div>
+<div id="controls">
+  <div class="chdr">Controls <span style="font-weight:400;color:#aaa">(not wired to the device yet)</span></div>
+  <div class="cbtns">
+    <button data-cmd="search">Search car</button>
+    <button data-cmd="arm">Arm</button>
+    <button data-cmd="disarm">Disarm</button>
+    <button data-cmd="valet_on">Valet on</button>
+    <button data-cmd="valet_off">Valet off</button>
+    <button data-cmd="motor_on">Motor on</button>
+    <button data-cmd="motor_off">Motor off</button>
+    <button data-cmd="block_on">Block on</button>
+    <button data-cmd="block_off">Block off</button>
+  </div>
+  <div id="ctoast"></div>
 </div>
 <div id="jhdr">Journal — <span style="color:#1c8a4e">device→</span> / <span style="color:#2a6fd6">←server</span></div>
 <div id="jwrap"><div id="jlist"></div></div>
@@ -271,6 +293,16 @@ function loadGraph(){
     })
     .catch(function(e){ chart.innerHTML='<div style="padding:40px;color:#c0392b">error: '+e+'</div>'; });
 }
+document.getElementById('controls').addEventListener('click',function(e){
+  if(e.target.tagName==='BUTTON'&&e.target.getAttribute('data-cmd')){ sendCommand(e.target.getAttribute('data-cmd'), e.target.textContent); }
+});
+function sendCommand(cmd,label){
+  var t=document.getElementById('ctoast'); t.textContent=label+' …';
+  fetch('/api/command?cmd='+encodeURIComponent(cmd),{cache:'no-store'})
+    .then(function(r){return r.json();})
+    .then(function(j){ t.textContent=label+' → '+(j.msg||(j.ok?'sent':'no response')); })
+    .catch(function(e){ t.textContent=label+' → error: '+e; });
+}
 tick(); setInterval(tick,5000);
 </script></body></html>"""
 
@@ -343,6 +375,11 @@ class Handler(BaseHTTPRequestHandler):
                 rows = q("SELECT ts,dir,summary FROM journal ORDER BY id DESC LIMIT 60")
                 self._send(200, json.dumps([{"ts": r[0], "dir": r[1], "summary": r[2]}
                                             for r in rows]), "application/json")
+            elif self.path.startswith("/api/command"):
+                cmd = (parse_qs(urlparse(self.path).query).get("cmd") or [""])[0]
+                self._send(200, json.dumps({"ok": False, "cmd": cmd,
+                    "msg": "received - not wired to the device yet (command protocol TBD)"}),
+                    "application/json")
             else:
                 self._send(404, "not found", "text/plain")
         except Exception as e:
