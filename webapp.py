@@ -153,7 +153,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <div id="jwrap"><div id="jlist"></div></div>
 <div id="gmodal" onclick="if(event.target===this)closeGraph()">
   <div id="gbox"><div id="ghead"><span id="gtitle"></span><span id="gclose" onclick="closeGraph()">✕</span></div>
-  <div id="gperiods"><button data-h="12">12h</button><button data-h="24">24h</button><button data-h="36">36h</button><button data-h="168">7d</button><button data-h="720">30d</button><button data-h="2160">90d</button></div>
+  <div id="gperiods"><button data-h="6">6h</button><button data-h="12">12h</button><button data-h="24">24h</button><button data-h="168">7d</button><button data-h="720">30d</button><button data-h="2160">90d</button></div>
   <div id="gchart"></div>
   <div id="ghint">drag across the chart to zoom · double-click to reset</div></div>
 </div>
@@ -272,9 +272,9 @@ async function tick(){
   }).join('');
  }catch(e){ document.getElementById('online').textContent='error: '+e; }
 }
-var uplotInst=null, gMetric=null, gLabel=null, gHours=36;
+var uplotInst=null, gMetric=null, gLabel=null, gHours=6;
 function openGraph(metric,label){
-  gMetric=metric; gLabel=label; gHours=36;
+  gMetric=metric; gLabel=label; gHours=6;
   document.getElementById('gtitle').textContent=label;
   document.getElementById('gmodal').style.display='flex';
   markPeriod(); loadGraph();
