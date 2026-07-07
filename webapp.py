@@ -85,7 +85,11 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  .mbadge.valet .disc{background:#e08600}
  .mbadge.unk .disc,.mbadge.ignoff .disc{background:#9e9e9e}
  /* track time-range selector */
- #trackbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 12px;background:#fff;border-bottom:1px solid #e3e3e3;font-size:12px}
+ #trackbar{display:none;align-items:center;gap:6px;flex-wrap:wrap;padding:6px 12px;background:#fff;border-bottom:1px solid #e3e3e3;font-size:12px}
+ #trackbar.show{display:flex}
+ #trackbtn{background:none;border:none;cursor:pointer;color:#333;padding:0;line-height:0;display:flex;align-items:center}
+ #trackbtn svg{width:22px;height:22px}
+ #trackbtn.on{color:#0b6}
  #trackbar .tlabel{color:#888;font-weight:700;margin-right:2px}
  #trackbar .tbtn{border:1px solid #ccc;background:#fff;border-radius:6px;padding:3px 9px;cursor:pointer;color:#444;white-space:nowrap;font-family:system-ui;font-size:12px}
  #trackbar .tbtn:hover{border-color:#0b6}
@@ -146,6 +150,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 </style></head><body>
 <div id="top">
   <button id="menubtn" title="Controls">☰</button>
+  <button id="trackbtn" title="Track period"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg></button>
   <div class="brand">Fiesta<small id="online">connecting…</small></div>
 </div>
 <div id="trackbar">
@@ -228,6 +233,10 @@ function bearing(a,b){var la1=a[0]*Math.PI/180,la2=b[0]*Math.PI/180,dl=(b[1]-a[1
 function arrowIcon(deg){return L.divIcon({className:'',iconSize:[30,30],iconAnchor:[15,15],
   html:'<div style="transform:rotate('+deg+'deg)"><svg viewBox="0 0 24 24" width="30" height="30">'+
   '<path d="M12 2l6 18-6-4-6 4z" fill="#1565c0" stroke="#fff" stroke-width="1.3" stroke-linejoin="round"/></svg></div>'});}
+// small direction arrow placed along the track (points to travel direction)
+function trackArrowIcon(deg){return L.divIcon({className:'',iconSize:[15,15],iconAnchor:[7.5,7.5],
+  html:'<div style="transform:rotate('+deg+'deg)"><svg viewBox="0 0 24 24" width="15" height="15">'+
+  '<path d="M12 4l6 15-6-3.2-6 3.2z" fill="#fff" stroke="#222" stroke-width="1.7" stroke-linejoin="round"/></svg></div>'});}
 var TZ=Intl.DateTimeFormat().resolvedOptions().timeZone||'local';
 function z2(n){return (n<10?'0':'')+n;}
 function localTime(s){ if(!s) return '-'; var d=new Date(String(s).replace(' ','T')+'Z'); if(isNaN(d.getTime())) return s;
@@ -293,6 +302,11 @@ async function drawTrack(fit){
                    {sticky:true,direction:'top'})
       .addTo(trackLayer);
   }
+  var astep=Math.max(6,Math.ceil(tr.length/40));   // ~40 direction arrows max, evenly spaced
+  for(var k=astep;k<tr.length;k+=astep){
+    if((tr[k][2]||0)<2) continue;                   // only where the car was actually moving
+    L.marker([tr[k][0],tr[k][1]],{icon:trackArrowIcon(bearing(tr[k-1],tr[k])),interactive:false,keyboard:false}).addTo(trackLayer);
+  }
   document.getElementById('tbinfo').textContent = tr.length
     ? (tr.length+' pts · '+fmtEpoch(r[0])+' → '+fmtEpoch(r[1]))
     : ('no track · '+fmtEpoch(r[0])+' → '+fmtEpoch(r[1]));
@@ -305,6 +319,8 @@ function setTrackMode(m,btn){
 }
 (function(){
   var tb=document.getElementById('trackbar'); if(!tb) return;
+  var tbtn=document.getElementById('trackbtn');
+  if(tbtn) tbtn.addEventListener('click',function(){ var on=tb.classList.toggle('show'); tbtn.classList.toggle('on',on); });
   var midnight=function(x){var d=new Date(x);d.setHours(0,0,0,0);return d;};
   var toLocalInput=function(d){return d.getFullYear()+'-'+z2(d.getMonth()+1)+'-'+z2(d.getDate())+'T'+z2(d.getHours())+':'+z2(d.getMinutes());};
   document.getElementById('tbfrom').value=toLocalInput(new Date(Date.now()-86400000));
