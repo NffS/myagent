@@ -407,7 +407,7 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path.startswith("/api/command"):
                 cmd = (parse_qs(urlparse(self.path).query).get("cmd") or [""])[0]
                 self._send(200, json.dumps({"ok": False, "cmd": cmd,
-                    "msg": "received - not wired to the device yet (command protocol TBD)"}),
+                    "msg": "not wired yet (independent app — SMS control planned)"}),
                     "application/json")
             else:
                 self._send(404, "not found", "text/plain")
