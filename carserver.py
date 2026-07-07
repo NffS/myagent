@@ -158,6 +158,7 @@ class CarServer:
         self.loglock = threading.Lock()
         self.logfh = open(os.path.join(capdir, "carserver_%s.log" % ts), "a", encoding="utf-8")
         self.unsupfh = open(os.path.join(capdir, "unsupported_%s.jsonl" % ts), "a", encoding="utf-8")
+        self.srvfh = open(os.path.join(capdir, "srv_frames_%s.jsonl" % ts), "a", encoding="utf-8")
         self.backfill()
         self.backfill_metrics()
         self.purge_old()
@@ -174,7 +175,8 @@ class CarServer:
                 d8 = d[8] | (d[9] << 8); d10 = d[10] | (d[11] << 8)
                 self._kv(cur, "backup_voltage", round(d[14] * 0.03176, 2))
                 self._kv(cur, "status_word", "%04x %04x %02x" % (d8, d10, d[15]))
-                self._kv(cur, "armed", "armed" if (d8 & 0x0200) else "disarmed")
+                self._kv(cur, "armed", "valet" if (d10 & 0x4000) else ("armed" if (d8 & 0x0200) else "disarmed"))
+                self._kv(cur, "valet", "on" if (d10 & 0x4000) else "off")
                 self._kv(cur, "ignition", "off" if (d[15] & 0x02) else "on")
                 self._kv(cur, "moving", "yes" if (d10 & 0x0010) else "no")
         # seed tag voltage from the most recent in-cluster (90-106) 0x0110 record
@@ -351,7 +353,10 @@ class CarServer:
                         self._kv(cur, "pin_voltage", round(data[12] * 0.02755, 2))
                     # data[14] = 125 (constant) -> internal BACKUP battery, stable ~3.97V.
                     self._kv(cur, "backup_voltage", round(data[14] * 0.03176, 2))
-                    self._kv(cur, "armed", "armed" if (d8 & 0x0200) else "disarmed")
+                    # valet mode = d10 & 0x4000 (takes priority; guard bit d8 0x0200 is
+                    # cleared in valet, which otherwise reads as "disarmed").
+                    self._kv(cur, "armed", "valet" if (d10 & 0x4000) else ("armed" if (d8 & 0x0200) else "disarmed"))
+                    self._kv(cur, "valet", "on" if (d10 & 0x4000) else "off")
                     # ignition: data[15] bit 0x02 = OFF/parked (reliable), 0x00 = ON.
                     # (d10 bit 0x2000 was WRONG -- it stays set even when parked/ign-off.)
                     self._kv(cur, "ignition", "off" if (data[15] & 0x02) else "on")
@@ -379,6 +384,23 @@ class CarServer:
             self.unsupfh.flush()
         self.log("UNSUPPORTED type=0x%04x len=%d hex=%s |%s|"
                  % (f["typ"], len(f["data"]), f["data"].hex()[:64], asc[:40]))
+
+    # frequent keepalive/handshake frames from the server (everything else = candidate command)
+    SRV_ACK_TYPES = {0x0e01, 0x0f01, 0x0405, 0x0292, 0x0115, 0x0450, 0x0600}
+
+    def log_srv(self, f):
+        """Capture EVERY Car-Online -> device frame (relay) with full hex to
+        srv_frames_*.jsonl, and log prominently any non-keepalive frame -- these
+        are the candidate commands (arm/disarm/etc. issued from the app)."""
+        asc = "".join(chr(b) if 32 <= b < 127 else "." for b in f["data"])
+        rec = {"ts": now(), "type": "0x%04x" % f["typ"], "ctr": f["ctr"],
+               "len": len(f["data"]), "hex": f["data"].hex(), "ascii": asc}
+        with self.loglock:
+            self.srvfh.write(json.dumps(rec) + "\n")
+            self.srvfh.flush()
+        if f["typ"] not in self.SRV_ACK_TYPES:
+            self.log("<<< SRV frame type=0x%04x ctr=%d len=%d hex=%s |%s|"
+                     % (f["typ"], f["ctr"], len(f["data"]), f["data"].hex()[:96], asc[:48]))
 
     # server->device frame types we recognise (handshake + record ACKs + cmds)
     SRV_NAMES = {0x0e01: "login-ack", 0x0f01: "handshake", 0x0405: "handshake",
@@ -420,9 +442,9 @@ class CarServer:
             if typ == 0x0110 and len(d) >= 16:
                 d8 = d[8] | (d[9] << 8); d10 = d[10] | (d[11] << 8)
                 tagv = ("tag=%.2fV" % (d[12] * 0.02755)) if 90 <= d[12] <= 106 else ("d12=%d" % d[12])
+                state = "VALET" if (d10 & 0x4000) else ("ARMED" if (d8 & 0x0200) else "disarmed")
                 return "rec bk=%.2fV %s %s ign=%s%s" % (
-                    d[14] * 0.03176, tagv,
-                    "ARMED" if (d8 & 0x0200) else "disarmed", "off" if (d[15] & 0x02) else "on",
+                    d[14] * 0.03176, tagv, state, "off" if (d[15] & 0x02) else "on",
                     " moving" if (d10 & 0x0010) else "")
             if typ == 0x0230:
                 return "cell %s" % d.decode("ascii", "replace")[:24]
@@ -581,8 +603,7 @@ class CarServer:
                 frames, c = parse(buf)
                 del buf[:c]
                 for f in frames:
-                    if f["typ"] == 0x0292:
-                        self.log("SET-TIME 0x0292 payload=%s recv=%s" % (f["data"].hex(), now()))
+                    self.log_srv(f)
                     self.journal_add("server", f["typ"], self.server_summary(f))
         except OSError:
             pass

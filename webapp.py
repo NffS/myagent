@@ -80,6 +80,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #armed,#ign{font-weight:700;padding:3px 10px;border-radius:14px;font-size:13px;white-space:nowrap}
  #armed.on,#ign.on{background:#e7f6ec;color:#1c8a4e} #armed.off{background:#fdeaea;color:#c0392b}
  #armed.unk,#ign.unk,#ign.off{background:#eee;color:#888}
+ #armed.valet{background:#fff4e0;color:#c77700}
  #armed svg,#ign svg{width:15px;height:15px;vertical-align:-3px;margin-right:3px}
  #addrwrap{flex:1 1 auto;min-width:0}
  #addr{font-size:13.5px;line-height:1.25} #evt{font-size:12px;color:#888}
@@ -237,7 +238,8 @@ async function tick(){
     chip(ICONS.pin, kv.pin_voltage, ' V', 'tag', 'tag_voltage'));
   // armed state (decoded into kv.armed when available)
   var a=document.getElementById('armed'), av=(kv.armed||'').toLowerCase();
-  if(av.indexOf('arm')>=0 && av.indexOf('dis')<0){ a.innerHTML=ICONS.lock+'Armed'; a.className='on'; }
+  if(av==='valet'){ a.innerHTML=ICONS.unlock+'Valet mode'; a.className='valet'; }
+  else if(av.indexOf('arm')>=0 && av.indexOf('dis')<0){ a.innerHTML=ICONS.lock+'Armed'; a.className='on'; }
   else if(av.indexOf('dis')>=0 || av==='off'){ a.innerHTML=ICONS.unlock+'Disarmed'; a.className='off'; }
   else { a.innerHTML=ICONS.lock+'—'; a.className='unk'; }
   var ig=document.getElementById('ign'), iv=(kv.ignition||'').toLowerCase();
