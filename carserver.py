@@ -268,6 +268,7 @@ class CarServer:
         ("valet", "on"): ("security", "Valet mode on"), ("valet", "off"): ("security", "Valet mode off"),
         ("ignition", "on"): ("ignition", "Ignition on"), ("ignition", "off"): ("ignition", "Ignition off"),
         ("door", "open"): ("door", "Door open"), ("door", "closed"): ("door", "Door closed"),
+        ("engine", "on"): ("engine", "Engine on"), ("engine", "off"): ("engine", "Engine off"),
     }
 
     def _emit_event(self, cur, ts, kind, event):
@@ -288,7 +289,11 @@ class CarServer:
         new = {"guard": "armed" if (d8 & 0x0200) else "disarmed",
                "valet": "on" if (d10 & 0x4000) else "off",
                "ignition": "off" if (d15 & 0x02) else "on",
-               "door": "open" if (d8 & 0x0004) else "closed"}
+               "door": "open" if (d8 & 0x0004) else "closed",
+               # d8 0x0400 tracks the engine running: it sets at ride start and clears
+               # at ride end (verified against Car-Online rides), distinct from the
+               # data[15] ACC/key "ignition" bit above.
+               "engine": "on" if (d8 & 0x0400) else "off"}
         t = self._ts_epoch(ts)
         for cat, val in new.items():
             prev = state.get(cat)
@@ -401,7 +406,9 @@ class CarServer:
                 self._kv(cur, "version", txt)
             elif typ == 0x0304:
                 self._kv(cur, "devinfo", txt)
-            elif typ in (0x0110, 0x0240, 0x0250, 0x0270, 0x0290, 0x0100, 0x0610):
+            elif typ in (0x0110, 0x0209, 0x0240, 0x0250, 0x0270, 0x0290, 0x0100, 0x0610):
+                # 0x0209 = discrete EVENT records (transponder/parking-brake/Event#NN/
+                # armed-by-remote etc. that Car-Online decodes). Stored raw for decoding.
                 cur.execute("INSERT INTO telemetry(recv_ts,type,hex) VALUES(?,?,?)",
                             (now(), "0x%04x" % typ, data.hex()))
                 # 0x0110 record layout (after counter(4)+recordid(4)):

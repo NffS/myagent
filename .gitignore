@@ -3,3 +3,7 @@ __pycache__/
 captures/
 *.log
 *.bin
+car_snap.db
+*.db
+*.db-wal
+*.db-shm

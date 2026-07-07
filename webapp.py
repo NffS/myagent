@@ -115,7 +115,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #tabs .tab.on{color:#0b6;border-bottom-color:#0b6;font-weight:600}
  .er{display:flex;gap:10px;padding:2px 16px;border-bottom:1px solid #f0f0f0}
  .et{color:#aaa;flex:0 0 150px} .ee{font-weight:600}
- .ek-security{color:#c77700} .ek-ignition{color:#2a6fd6} .ek-door{color:#8a6d1c} .ek-conn{color:#999} .ek-motion{color:#1c8a4e}
+ .ek-security{color:#c77700} .ek-ignition{color:#2a6fd6} .ek-door{color:#8a6d1c} .ek-conn{color:#999} .ek-motion{color:#1c8a4e} .ek-engine{color:#0b6}
  .jr{display:flex;gap:10px;padding:2px 16px;border-bottom:1px solid #f0f0f0}
  .jt{color:#aaa;flex:0 0 88px} .js{color:#333;overflow:hidden;text-overflow:ellipsis}
  .jd{flex:0 0 62px;font-weight:700}
@@ -563,7 +563,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps([[r[0], r[1], round((r[2] or 0) * 1.852, 1), r[3]]
                                             for r in rows]), "application/json")
             elif self.path.startswith("/api/journal"):
-                rows = q("SELECT ts,dir,summary FROM journal ORDER BY id DESC LIMIT 60")
+                rows = q("SELECT ts,dir,summary FROM journal ORDER BY id DESC LIMIT 400")
                 self._send(200, json.dumps([{"ts": r[0], "dir": r[1], "summary": r[2]}
                                             for r in rows]), "application/json")
             elif self.path.startswith("/api/events"):
