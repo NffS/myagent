@@ -111,9 +111,12 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #sbback.open{display:block}
  .sbhead{display:flex;justify-content:space-between;align-items:center;font-weight:700;font-size:15px;margin-bottom:2px}
  .sbhead button{background:none;border:none;font-size:18px;color:#999;cursor:pointer}
- .cbtns{display:flex;flex-direction:column;gap:6px;margin-top:8px}
- .cbtns button{border:1px solid #ccc;background:#f7f7f7;border-radius:7px;padding:8px 12px;cursor:pointer;font-size:13px;text-align:left}
- .cbtns button:hover{background:#eee} .cbtns button:active{background:#dcdcdc}
+ .cbtns{display:flex;flex-direction:column;gap:2px;margin-top:8px}
+ .cbtn{display:flex;align-items:center;gap:12px;border:none;background:none;cursor:pointer;padding:5px 6px;width:100%;text-align:left;font-size:13.5px;color:#222;border-radius:8px}
+ .cbtn:hover{background:#f2f2f2} .cbtn:active{background:#e8e8e8}
+ .cico{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+ .cico svg{width:21px;height:21px;fill:none;stroke:#fff;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+ .cico.g{background:#12a594} .cico.k{background:#9e9e9e} .cico.o{background:#f4511e}
  #ctoast{font-size:12px;color:#777;margin-top:10px;min-height:16px}
  .gtip{position:absolute;pointer-events:none;background:#0b6;color:#fff;font-size:11px;font-weight:600;padding:1px 6px;border-radius:4px;transform:translate(10px,-26px);white-space:nowrap;z-index:5}
 </style></head><body>
@@ -132,15 +135,17 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
   <div class="sbhead"><span>Controls</span><button id="sbclose" title="close">✕</button></div>
   <div style="font-size:11px;color:#aaa">not wired to the device yet</div>
   <div class="cbtns">
-    <button data-cmd="search">Search car</button>
-    <button data-cmd="arm">Arm</button>
-    <button data-cmd="disarm">Disarm</button>
-    <button data-cmd="valet_on">Valet on</button>
-    <button data-cmd="valet_off">Valet off</button>
-    <button data-cmd="motor_on">Motor on</button>
-    <button data-cmd="motor_off">Motor off</button>
-    <button data-cmd="block_on">Block on</button>
-    <button data-cmd="block_off">Block off</button>
+    <button data-cmd="search" class="cbtn"><span class="cico g"><svg viewBox="0 0 24 24"><path d="M12 21s6-5.7 6-11a6 6 0 1 0-12 0c0 5.3 6 11 6 11z"/><circle cx="12" cy="10" r="2.3"/></svg></span>Search car</button>
+    <button data-cmd="doors_open" class="cbtn"><span class="cico g"><svg viewBox="0 0 24 24"><path d="M5 19l1-8.5 7-2.5 5 2V19z"/><path d="M8.5 9.5V13H15"/><circle cx="15" cy="15.6" r=".7" fill="#fff" stroke="none"/></svg></span>Doors open</button>
+    <button data-cmd="doors_close" class="cbtn"><span class="cico k"><svg viewBox="0 0 24 24"><path d="M5 19l1-8.5 7-2.5 5 2V19z"/><path d="M8.5 9.5V13H15"/><circle cx="15" cy="15.6" r=".7" fill="#fff" stroke="none"/></svg></span>Doors close</button>
+    <button data-cmd="arm" class="cbtn"><span class="cico g"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></span>Arm</button>
+    <button data-cmd="disarm" class="cbtn"><span class="cico k"><svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.5-1.8"/></svg></span>Disarm</button>
+    <button data-cmd="valet_on" class="cbtn"><span class="cico g"><svg viewBox="0 0 24 24"><path d="M3.5 17l1.3-4.5h8l2.5 3.5"/><path d="M2.5 17h13"/><circle cx="6" cy="18" r="1.1"/><circle cx="13" cy="18" r="1.1"/><circle cx="18.5" cy="9.5" r="1.5"/><path d="M18.5 11.5v3M17 13h3"/></svg></span>Valet mode on</button>
+    <button data-cmd="valet_off" class="cbtn"><span class="cico k"><svg viewBox="0 0 24 24"><path d="M3.5 17l1.3-4.5h8l2.5 3.5"/><path d="M2.5 17h13"/><circle cx="6" cy="18" r="1.1"/><circle cx="13" cy="18" r="1.1"/><circle cx="18.5" cy="9.5" r="1.5"/><path d="M18.5 11.5v3M17 13h3"/></svg></span>Valet mode off</button>
+    <button data-cmd="motor_on" class="cbtn"><span class="cico g"><svg viewBox="0 0 24 24"><path d="M4 10h7l2-2h3v3h2l2 2v3h-4v2H9l-2-2H4z"/><path d="M7 10V8h3"/></svg></span>Motor on</button>
+    <button data-cmd="motor_off" class="cbtn"><span class="cico k"><svg viewBox="0 0 24 24"><path d="M4 10h7l2-2h3v3h2l2 2v3h-4v2H9l-2-2H4z"/><path d="M7 10V8h3"/></svg></span>Motor off</button>
+    <button data-cmd="trunk_open" class="cbtn"><span class="cico g"><svg viewBox="0 0 24 24"><path d="M3.5 17l1.3-4.5h6.5l1 .5"/><path d="M2.5 17h12"/><circle cx="6" cy="18" r="1.1"/><circle cx="12.5" cy="18" r="1.1"/><path d="M11.5 12.5l8-4.5"/></svg></span>Open trunk</button>
+    <button data-cmd="block" class="cbtn"><span class="cico o"><svg viewBox="0 0 24 24"><path d="M3 10h6l2-2h2v3h1l2 2"/><path d="M3 10v5h8"/><rect x="14" y="14" width="7" height="6" rx="1"/><path d="M15.5 14v-1.3a2 2 0 0 1 4 0V14"/></svg></span>Remote blocking</button>
   </div>
   <div id="ctoast"></div>
 </div>
@@ -310,7 +315,8 @@ function loadGraph(){
     .catch(function(e){ chart.innerHTML='<div style="padding:40px;color:#c0392b">error: '+e+'</div>'; });
 }
 document.getElementById('sidebar').addEventListener('click',function(e){
-  if(e.target.tagName==='BUTTON'&&e.target.getAttribute('data-cmd')){ sendCommand(e.target.getAttribute('data-cmd'), e.target.textContent); }
+  var b=e.target.closest&&e.target.closest('button[data-cmd]');
+  if(b){ sendCommand(b.getAttribute('data-cmd'), b.textContent.trim()); }
 });
 function toggleSidebar(o){ document.getElementById('sidebar').classList.toggle('open',o); document.getElementById('sbback').classList.toggle('open',o); }
 document.getElementById('menubtn').onclick=function(){toggleSidebar(true);};
