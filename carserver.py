@@ -147,11 +147,16 @@ class CarServer:
         self.db.execute("CREATE TABLE IF NOT EXISTS metrics(id INTEGER PRIMARY KEY,"
                         "ts TEXT, name TEXT, value REAL)")
         self.db.execute("CREATE INDEX IF NOT EXISTS ix_metrics ON metrics(name, id)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,"
+                        "ts TEXT, kind TEXT, event TEXT)")
         self.db.commit()
         self._jn = 0
         self._jlast = {}
         self._sigN = []
         self._metric_last = 0
+        self._estate = {}   # last-seen state per event category (for transition detection)
+        self._elast = {}    # last emit epoch per category (debounce rapid flips)
+        self._en = 0
         self.dblock = threading.Lock()
         self._trace_last = {}
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -161,6 +166,7 @@ class CarServer:
         self.srvfh = open(os.path.join(capdir, "srv_frames_%s.jsonl" % ts), "a", encoding="utf-8")
         self.backfill()
         self.backfill_metrics()
+        self.backfill_events()
         self.purge_old()
 
     def backfill(self):
@@ -256,11 +262,77 @@ class CarServer:
                 cur.executemany("INSERT INTO metrics(ts,name,value) VALUES(?,?,?)", ins)
         self.db.commit()
 
+    # derived event log: map a state category+value to (kind, human label)
+    EV_LABELS = {
+        ("guard", "armed"): ("security", "Armed"), ("guard", "disarmed"): ("security", "Disarmed"),
+        ("valet", "on"): ("security", "Valet mode on"), ("valet", "off"): ("security", "Valet mode off"),
+        ("ignition", "on"): ("ignition", "Ignition on"), ("ignition", "off"): ("ignition", "Ignition off"),
+        ("door", "open"): ("door", "Door open"), ("door", "closed"): ("door", "Door closed"),
+    }
+
+    def _emit_event(self, cur, ts, kind, event):
+        cur.execute("INSERT INTO events(ts,kind,event) VALUES(?,?,?)", (ts, kind, event))
+
+    @staticmethod
+    def _ts_epoch(ts):
+        for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return (datetime.datetime.strptime(ts[:26], fmt) - datetime.datetime(1970, 1, 1)).total_seconds()
+            except ValueError:
+                continue
+        return 0.0
+
+    def _detect_events(self, cur, ts, d8, d10, d15, state, last):
+        """Log an event when a status category changes vs `state`; `last` = last emit
+        epoch per category, to debounce sub-3s flips (buffered-replay bursts)."""
+        new = {"guard": "armed" if (d8 & 0x0200) else "disarmed",
+               "valet": "on" if (d10 & 0x4000) else "off",
+               "ignition": "off" if (d15 & 0x02) else "on",
+               "door": "open" if (d8 & 0x0004) else "closed"}
+        t = self._ts_epoch(ts)
+        for cat, val in new.items():
+            prev = state.get(cat)
+            state[cat] = val
+            if prev is not None and prev != val:
+                if t - last.get(cat, 0.0) < 0.5:  # drop only sub-0.5s flicker (replay bursts)
+                    last[cat] = t
+                    continue
+                last[cat] = t
+                kind, label = self.EV_LABELS.get((cat, val), (cat, val))
+                self._emit_event(cur, ts, kind, label)
+
+    def _event_locked(self, kind, event):
+        """Log a standalone event (e.g. connectivity) taking the db lock ourselves."""
+        with self.dblock:
+            cur = self.db.cursor()
+            self._emit_event(cur, now(), kind, event)
+            self._en += 1
+            if self._en % 40 == 0:
+                cur.execute("DELETE FROM events WHERE id < (SELECT max(id)-3000 FROM events)")
+            self.db.commit()
+
+    def backfill_events(self):
+        """On first run, seed the event log from the last 24h of stored 0x0110 status
+        transitions so the Events tab isn't empty. Then live detection takes over."""
+        cur = self.db.cursor()
+        if cur.execute("SELECT count(*) FROM events").fetchone()[0] > 0:
+            return
+        cut = (datetime.datetime.now() - datetime.timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+        # fetchall FIRST: _detect_events reuses cur for INSERTs, which would clobber a live SELECT cursor
+        rows = cur.execute("SELECT recv_ts,hex FROM telemetry WHERE type='0x0110' AND recv_ts>? ORDER BY id", (cut,)).fetchall()
+        state, last = {}, {}
+        for ts, hx in rows:
+            b = bytes.fromhex(hx)
+            if len(b) >= 16:
+                self._detect_events(cur, ts, b[8] | (b[9] << 8), b[10] | (b[11] << 8), b[15], state, last)
+        self.db.commit()
+        self._estate, self._elast = state, last  # continue live detection from the last state
+
     def purge_old(self, days=90):
         """Retention: keep only the last `days` of history in the time-series tables."""
         cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
         cur = self.db.cursor()
-        for tbl, col in (("metrics", "ts"), ("position", "recv_ts"), ("telemetry", "recv_ts")):
+        for tbl, col in (("metrics", "ts"), ("events", "ts"), ("position", "recv_ts"), ("telemetry", "recv_ts")):
             cur.execute("DELETE FROM %s WHERE %s < ?" % (tbl, col), (cutoff,))
         self.db.commit()
 
@@ -361,6 +433,7 @@ class CarServer:
                     # (d10 bit 0x2000 was WRONG -- it stays set even when parked/ign-off.)
                     self._kv(cur, "ignition", "off" if (data[15] & 0x02) else "on")
                     self._kv(cur, "moving", "yes" if (d10 & 0x0010) else "no")
+                    self._detect_events(cur, now(), d8, d10, data[15], self._estate, self._elast)
                 elif typ == 0x0270 and len(data) >= 3:
                     t = data[2] - 256 if data[2] >= 128 else data[2]
                     self._kv(cur, "temp_raw", data[2])
@@ -498,6 +571,7 @@ class CarServer:
     def handle(self, conn, addr):
         peer = "%s:%d" % addr
         self.log("+++ device connected %s [%s]" % (peer, "relay" if self.relay else "standalone"))
+        self._event_locked("conn", "Device online")
         try:
             if self.relay:
                 self._relay(conn, peer)
@@ -505,6 +579,7 @@ class CarServer:
                 self._standalone(conn, peer)
         finally:
             self.log("--- disconnect %s" % peer)
+            self._event_locked("conn", "Device offline")
 
     def _standalone(self, conn, peer):
         dev_id = [0]

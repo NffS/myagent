@@ -85,10 +85,14 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #addrwrap{flex:1 1 auto;min-width:0}
  #addr{font-size:13.5px;line-height:1.25} #evt{font-size:12px;color:#888}
  /* journal */
- #jwrap{max-height:26vh;overflow:auto;background:#fafafa;border-top:1px solid #e3e3e3;
-        font-family:ui-monospace,Consolas,monospace;font-size:12px}
- #jhdr{position:sticky;top:0;background:#f0f0f0;padding:4px 16px;font-weight:600;
-       color:#555;border-bottom:1px solid #e3e3e3;font-family:system-ui}
+ .pane{max-height:26vh;overflow:auto;background:#fafafa;border-top:1px solid #e3e3e3;
+       font-family:ui-monospace,Consolas,monospace;font-size:12px}
+ #tabs{display:flex;background:#f0f0f0;border-top:1px solid #e3e3e3}
+ #tabs .tab{border:none;background:none;padding:6px 16px;cursor:pointer;font-size:13px;color:#666;border-bottom:2px solid transparent;font-family:system-ui}
+ #tabs .tab.on{color:#0b6;border-bottom-color:#0b6;font-weight:600}
+ .er{display:flex;gap:10px;padding:2px 16px;border-bottom:1px solid #f0f0f0}
+ .et{color:#aaa;flex:0 0 150px} .ee{font-weight:600}
+ .ek-security{color:#c77700} .ek-ignition{color:#2a6fd6} .ek-door{color:#8a6d1c} .ek-conn{color:#999} .ek-motion{color:#1c8a4e}
  .jr{display:flex;gap:10px;padding:2px 16px;border-bottom:1px solid #f0f0f0}
  .jt{color:#aaa;flex:0 0 88px} .js{color:#333;overflow:hidden;text-overflow:ellipsis}
  .jd{flex:0 0 62px;font-weight:700}
@@ -150,8 +154,12 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
   </div>
   <div id="ctoast"></div>
 </div>
-<div id="jhdr">Journal — <span style="color:#1c8a4e">device→</span> / <span style="color:#2a6fd6">←server</span></div>
-<div id="jwrap"><div id="jlist"></div></div>
+<div id="tabs">
+  <button class="tab on" data-tab="events">Events</button>
+  <button class="tab" data-tab="journal">Raw journal</button>
+</div>
+<div id="ewrap" class="pane"><div id="elist"></div></div>
+<div id="jwrap" class="pane" style="display:none"><div id="jlist"></div></div>
 <div id="gmodal" onclick="if(event.target===this)closeGraph()">
   <div id="gbox"><div id="ghead"><span id="gtitle"></span><span id="gclose" onclick="closeGraph()">✕</span></div>
   <div id="gperiods"><button data-h="6">6h</button><button data-h="12">12h</button><button data-h="24">24h</button><button data-h="168">7d</button><button data-h="720">30d</button><button data-h="2160">90d</button></div>
@@ -272,6 +280,11 @@ async function tick(){
       '<span class="jd '+(dev?'dev':'srv')+'">'+(dev?'DEV →':'← SRV')+'</span>'+
       '<span class="js">'+e.summary+'</span></div>';
   }).join('');
+  var ev=await (await fetch('/api/events',{cache:'no-store'})).json();
+  document.getElementById('elist').innerHTML=ev.map(function(e){
+    return '<div class="er"><span class="et">'+localTime(e.ts)+'</span>'+
+      '<span class="ee ek-'+(e.kind||'')+'">'+e.event+'</span></div>';
+  }).join('') || '<div style="padding:16px;color:#888">no events yet — they log as the car changes state</div>';
  }catch(e){ document.getElementById('online').textContent='error: '+e; }
 }
 var uplotInst=null, gMetric=null, gLabel=null, gHours=6;
@@ -332,6 +345,14 @@ function sendCommand(cmd,label){
     .then(function(j){ t.textContent=label+' → '+(j.msg||(j.ok?'sent':'no response')); })
     .catch(function(e){ t.textContent=label+' → error: '+e; });
 }
+document.getElementById('tabs').addEventListener('click',function(e){
+  if(!e.target.classList.contains('tab')) return;
+  var t=e.target.getAttribute('data-tab');
+  var bs=document.querySelectorAll('#tabs .tab');
+  for(var i=0;i<bs.length;i++) bs[i].classList.toggle('on', bs[i].getAttribute('data-tab')===t);
+  document.getElementById('ewrap').style.display=(t==='events')?'':'none';
+  document.getElementById('jwrap').style.display=(t==='journal')?'':'none';
+});
 tick(); setInterval(tick,5000);
 </script></body></html>"""
 
@@ -403,6 +424,10 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path.startswith("/api/journal"):
                 rows = q("SELECT ts,dir,summary FROM journal ORDER BY id DESC LIMIT 60")
                 self._send(200, json.dumps([{"ts": r[0], "dir": r[1], "summary": r[2]}
+                                            for r in rows]), "application/json")
+            elif self.path.startswith("/api/events"):
+                rows = q("SELECT ts,kind,event FROM events ORDER BY id DESC LIMIT 100")
+                self._send(200, json.dumps([{"ts": r[0], "kind": r[1], "event": r[2]}
                                             for r in rows]), "application/json")
             elif self.path.startswith("/api/command"):
                 cmd = (parse_qs(urlparse(self.path).query).get("cmd") or [""])[0]
