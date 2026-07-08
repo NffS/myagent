@@ -309,6 +309,14 @@ class CarServer:
                "door": "open" if (d8 & 0x0004) else "closed",
                "label": "found" if not (d15 & 0x02) else "absent"}
         t = self._ts_epoch(ts)
+        # Skip buffered-reconnect BURST frames: after a dropout the device replays buffered
+        # records <~1.2s apart whose bits bounce (e.g. a 1ms door blip while armed). Real
+        # states persist and are caught on the next normal-cadence frame, so nothing real
+        # is lost -- only the transient replay artifacts.
+        prevf = last.get("_frame")
+        last["_frame"] = t
+        if prevf is not None and (t - prevf) < 1.2:
+            return
         for cat, val in new.items():
             prev = state.get(cat)            # last EMITTED value for this category
             if prev is None:
