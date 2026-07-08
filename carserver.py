@@ -266,7 +266,7 @@ class CarServer:
     EV_LABELS = {
         ("guard", "armed"): ("security", "Armed"), ("guard", "disarmed"): ("security", "Disarmed"),
         ("valet", "on"): ("security", "Valet mode on"), ("valet", "off"): ("security", "Valet mode off"),
-        ("moving", "yes"): ("motion", "Started moving"), ("moving", "no"): ("motion", "Stopped"),
+        ("moving", "yes"): ("motion", "Ride started"), ("moving", "no"): ("motion", "Parked"),
         ("door", "open"): ("door", "Door open"), ("door", "closed"): ("door", "Door closed"),
         ("label", "found"): ("label", "Label found"), ("label", "absent"): ("label", "Label not found"),
     }

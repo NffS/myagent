@@ -378,7 +378,7 @@ async function tick(){
   else if(av.indexOf('dis')>=0 || av==='off'){ ad.innerHTML=ICONS.unlock; ac.textContent='Disarmed'; a.className='mbadge off'; }
   else { ad.innerHTML=ICONS.lock; ac.textContent='—'; a.className='mbadge unk'; }
   var mv=document.getElementById('mb_move'), mvd=mv.firstElementChild, mvc=mv.lastElementChild, mvv=(kv.moving||'').toLowerCase();
-  if(mvv==='yes'){ mvd.innerHTML=ICONS.car; mvc.textContent='Moving'; mv.className='mbadge on'; }
+  if(mvv==='yes'){ mvd.innerHTML=ICONS.car; mvc.textContent='Ride started'; mv.className='mbadge on'; }
   else if(mvv==='no'){ mvd.innerHTML=ICONS.car; mvc.textContent='Parked'; mv.className='mbadge ignoff'; }
   else { mvd.innerHTML=ICONS.car; mvc.textContent='—'; mv.className='mbadge unk'; }
   var lb=document.getElementById('mb_label'), lbd=lb.firstElementChild, lbc=lb.lastElementChild, lv=(kv.label||'').toLowerCase();
