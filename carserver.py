@@ -46,6 +46,7 @@ HS_EMPTY = [0x0e01, 0x0f01, 0x0405]
 TIME_BLOB = bytes.fromhex("32614b6ae385c501")
 DEFAULT_SUPPORTED = {0x0e00, 0x0110, 0x0220, 0x0230, 0x0209, 0x0240, 0x0250,
                      0x0260, 0x0270, 0x0290, 0x0100, 0x0302, 0x0304, 0x0400, 0x0610}
+SERVER_VERSION = "1.0.0"   # semantic server version (bump on release)
 
 
 def now():
@@ -150,11 +151,11 @@ class CarServer:
         self.db.execute("CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,"
                         "ts TEXT, kind TEXT, event TEXT)")
         self.db.commit()
-        # record this server build (file mtime) so the web UI can show the deployed version
+        # record this server's version + build time (file mtime) for the web UI
         try:
-            _mt = os.path.getmtime(os.path.abspath(__file__))
-            self.db.execute("INSERT OR REPLACE INTO kv(k,v,updated) VALUES('server_version',?,?)",
-                            (datetime.datetime.utcfromtimestamp(_mt).strftime("%d %b %H:%M"), now()))
+            _bt = datetime.datetime.utcfromtimestamp(os.path.getmtime(os.path.abspath(__file__))).strftime("%Y-%m-%d %H:%M UTC")
+            self.db.execute("INSERT OR REPLACE INTO kv(k,v,updated) VALUES('server_version',?,?)", (SERVER_VERSION, now()))
+            self.db.execute("INSERT OR REPLACE INTO kv(k,v,updated) VALUES('server_build',?,?)", (_bt, now()))
             self.db.commit()
         except Exception:
             pass

@@ -30,14 +30,15 @@ from urllib.parse import urlparse, parse_qs
 
 DB = "/root/captures/car.db"
 AUTH = None  # expected "Basic <base64(user:pass)>" header, or None to disable
+APP_VERSION = "1.0.0"   # semantic app version (bump on release)
 # build id = this file's mtime; changes on every deploy so open pages auto-reload
 try:
     _mt = os.path.getmtime(os.path.abspath(__file__))
     BUILD = str(int(_mt))
-    APP_VER = datetime.datetime.utcfromtimestamp(_mt).strftime("%d %b %H:%M")
+    APP_BUILD = datetime.datetime.utcfromtimestamp(_mt).strftime("%Y-%m-%d %H:%M UTC")
 except OSError:
     BUILD = "0"
-    APP_VER = "?"
+    APP_BUILD = "?"
 
 
 def q(sql, args=()):
@@ -219,7 +220,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
   <div id="ghint">drag across the chart to zoom · double-click to reset</div></div>
 </div>
 <script>
-var BUILD='__BUILD__'; var APPVER='__APPVER__';
+var BUILD='__BUILD__'; var APPVER='__APPVER__'; var APPBUILD='__APPBUILD__';
 var map=L.map('map').setView([0,0],2), marker=null, trackLayer=null, centered=false;
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
   {maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
@@ -366,7 +367,7 @@ async function tick(){
   document.getElementById('online').textContent=(stale?'offline':'online');
   document.getElementById('online').style.color=stale?'#c0392b':'#3aa76d';
   try{ var vv=document.getElementById('ver'); if(vv){ vv.textContent='app '+APPVER+'  ·  srv '+(kv.server_version||'?');
-       vv.title='device fw: '+(kv.version||'?')+'   (build times, UTC)'; } }catch(e){}
+       vv.title='app '+APPVER+' (built '+APPBUILD+')  ·  srv '+(kv.server_version||'?')+' (built '+(kv.server_build||'?')+')  ·  device fw '+(kv.version||'?'); } }catch(e){}
   // rebuild pictogram bar
   var top=document.getElementById('top');
   top.querySelectorAll('.chip').forEach(function(n){n.remove();});
@@ -516,7 +517,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             if self.path == "/" or self.path.startswith("/?") or self.path.startswith("/index"):
-                self._send(200, PAGE.replace("__BUILD__", BUILD).replace("__APPVER__", APP_VER), "text/html; charset=utf-8")
+                self._send(200, PAGE.replace("__BUILD__", BUILD).replace("__APPVER__", APP_VERSION).replace("__APPBUILD__", APP_BUILD), "text/html; charset=utf-8")
             elif self.path.startswith("/api/build"):
                 self._send(200, BUILD, "text/plain")
             elif self.path.startswith("/api/metric"):
