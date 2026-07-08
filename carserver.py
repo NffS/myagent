@@ -275,7 +275,7 @@ class CarServer:
     EV_LABELS = {
         ("guard", "armed"): ("security", "Armed"), ("guard", "disarmed"): ("security", "Disarmed"),
         ("valet", "on"): ("security", "Valet mode on"), ("valet", "off"): ("security", "Valet mode off"),
-        ("moving", "yes"): ("motion", "Ride started"), ("moving", "no"): ("motion", "Parked"),
+        ("moving", "yes"): ("motion", "Moving"), ("moving", "no"): ("motion", "Parked"),
         ("door", "open"): ("door", "Door open"), ("door", "closed"): ("door", "Door closed"),
         ("label", "found"): ("label", "Label found"), ("label", "absent"): ("label", "Label not found"),
     }
@@ -331,11 +331,11 @@ class CarServer:
             kind, label = self.EV_LABELS.get((cat, val), (cat, val))
             self._emit_event(cur, ts, kind, label)
 
-    def _event_locked(self, kind, event):
+    def _event_locked(self, kind, event, ts=None):
         """Log a standalone event (e.g. connectivity) taking the db lock ourselves."""
         with self.dblock:
             cur = self.db.cursor()
-            self._emit_event(cur, now(), kind, event)
+            self._emit_event(cur, ts or now(), kind, event)
             self._en += 1
             if self._en % 40 == 0:
                 cur.execute("DELETE FROM events WHERE id < (SELECT max(id)-3000 FROM events)")
@@ -607,7 +607,13 @@ class CarServer:
     def handle(self, conn, addr):
         peer = "%s:%d" % addr
         self.log("+++ device connected %s [%s]" % (peer, "relay" if self.relay else "standalone"))
-        self._event_locked("conn", "Device online")
+        # Only log an offline/online pair if the device was gone > 60s (a real outage);
+        # ignore the frequent quick reloginks / modem-resets that would otherwise spam.
+        off = getattr(self, "_offline_since", None)
+        if off is not None and (time.time() - off[0]) > 60:
+            self._event_locked("conn", "Device offline", ts=off[1])   # when it actually dropped
+            self._event_locked("conn", "Device online")               # now, on reconnect
+        self._offline_since = None
         try:
             if self.relay:
                 self._relay(conn, peer)
@@ -615,7 +621,7 @@ class CarServer:
                 self._standalone(conn, peer)
         finally:
             self.log("--- disconnect %s" % peer)
-            self._event_locked("conn", "Device offline")
+            self._offline_since = (time.time(), now())   # decide whether to log on next connect
 
     def _standalone(self, conn, peer):
         dev_id = [0]
