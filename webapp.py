@@ -173,7 +173,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
   <div id="map"></div>
   <div id="mapbadges">
     <div class="mbadge unk" id="mb_armed"><div class="disc"></div><div class="cap"></div></div>
-    <div class="mbadge unk" id="mb_ign"><div class="disc"></div><div class="cap"></div></div>
+    <div class="mbadge unk" id="mb_move"><div class="disc"></div><div class="cap"></div></div>
     <div class="mbadge unk" id="mb_label"><div class="disc"></div><div class="cap"></div></div>
   </div>
 </div>
@@ -257,7 +257,8 @@ var ICONS={
  lock:S+'<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>',
  unlock:S+'<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 7.5-1.8"/></svg>',
  key:S+'<circle cx="12" cy="13.5" r="6.5"/><path d="M12 2.5V9"/></svg>',
- engine:S+'<rect x="8" y="8.5" width="9.5" height="7.5" rx="1.5"/><rect x="10" y="5.5" width="5" height="3.2" rx=".8"/><circle cx="5" cy="12.3" r="2"/><path d="M7 12.3h1"/><path d="M17.5 11h2.5v3h-2.5"/><path d="M11 16v-2M14 16v-2"/></svg>'
+ engine:S+'<rect x="8" y="8.5" width="9.5" height="7.5" rx="1.5"/><rect x="10" y="5.5" width="5" height="3.2" rx=".8"/><circle cx="5" cy="12.3" r="2"/><path d="M7 12.3h1"/><path d="M17.5 11h2.5v3h-2.5"/><path d="M11 16v-2M14 16v-2"/></svg>',
+ car:S+'<rect x="3.5" y="9.5" width="17" height="4.3" rx="1.3"/><path d="M7 9.6L9.2 6h5.6l2.2 3.6"/><circle cx="8" cy="14.2" r="1.7"/><circle cx="16" cy="14.2" r="1.7"/></svg>'
 };
 function chip(icon,val,unit,label,metric){
   if(val==null||val===undefined||val==='') return '';
@@ -376,10 +377,10 @@ async function tick(){
   else if(av.indexOf('arm')>=0 && av.indexOf('dis')<0){ ad.innerHTML=ICONS.lock; ac.textContent='Armed'; a.className='mbadge on'; }
   else if(av.indexOf('dis')>=0 || av==='off'){ ad.innerHTML=ICONS.unlock; ac.textContent='Disarmed'; a.className='mbadge off'; }
   else { ad.innerHTML=ICONS.lock; ac.textContent='—'; a.className='mbadge unk'; }
-  var ig=document.getElementById('mb_ign'), igd=ig.firstElementChild, igc=ig.lastElementChild, iv=(kv.ignition||'').toLowerCase();
-  if(iv==='on'){ igd.innerHTML=ICONS.engine; igc.textContent='Ignition on'; ig.className='mbadge on'; }
-  else if(iv==='off'){ igd.innerHTML=ICONS.engine; igc.textContent='Ignition off'; ig.className='mbadge ignoff'; }
-  else { igd.innerHTML=ICONS.engine; igc.textContent='—'; ig.className='mbadge unk'; }
+  var mv=document.getElementById('mb_move'), mvd=mv.firstElementChild, mvc=mv.lastElementChild, mvv=(kv.moving||'').toLowerCase();
+  if(mvv==='yes'){ mvd.innerHTML=ICONS.car; mvc.textContent='Moving'; mv.className='mbadge on'; }
+  else if(mvv==='no'){ mvd.innerHTML=ICONS.car; mvc.textContent='Parked'; mv.className='mbadge ignoff'; }
+  else { mvd.innerHTML=ICONS.car; mvc.textContent='—'; mv.className='mbadge unk'; }
   var lb=document.getElementById('mb_label'), lbd=lb.firstElementChild, lbc=lb.lastElementChild, lv=(kv.label||'').toLowerCase();
   if(lv==='found'){ lbd.innerHTML=ICONS.key; lbc.textContent='Label'; lb.className='mbadge on'; }
   else if(lv==='absent'){ lbd.innerHTML=ICONS.key; lbc.textContent='No label'; lb.className='mbadge ignoff'; }

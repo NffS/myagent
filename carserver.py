@@ -183,8 +183,8 @@ class CarServer:
                 self._kv(cur, "status_word", "%04x %04x %02x" % (d8, d10, d[15]))
                 self._kv(cur, "armed", "valet" if (d10 & 0x4000) else ("armed" if (d8 & 0x0200) else "disarmed"))
                 self._kv(cur, "valet", "on" if (d10 & 0x4000) else "off")
-                self._kv(cur, "ignition", "off" if (d[15] & 0x02) else "on")
-                self._kv(cur, "moving", "yes" if (d10 & 0x0010) else "no")
+                self._kv(cur, "moving", "yes" if (d8 & 0x0400) else "no")
+                self._kv(cur, "label", "found" if not (d[15] & 0x02) else "absent")
         # seed tag voltage from the most recent in-cluster (90-106) 0x0110 record
         for (hx,) in cur.execute("SELECT hex FROM telemetry WHERE type='0x0110' ORDER BY id DESC LIMIT 40"):
             b = bytes.fromhex(hx)
@@ -266,7 +266,7 @@ class CarServer:
     EV_LABELS = {
         ("guard", "armed"): ("security", "Armed"), ("guard", "disarmed"): ("security", "Disarmed"),
         ("valet", "on"): ("security", "Valet mode on"), ("valet", "off"): ("security", "Valet mode off"),
-        ("ignition", "on"): ("ignition", "Ignition on"), ("ignition", "off"): ("ignition", "Ignition off"),
+        ("moving", "yes"): ("motion", "Started moving"), ("moving", "no"): ("motion", "Stopped"),
         ("door", "open"): ("door", "Door open"), ("door", "closed"): ("door", "Door closed"),
         ("label", "found"): ("label", "Label found"), ("label", "absent"): ("label", "Label not found"),
     }
@@ -286,12 +286,11 @@ class CarServer:
     def _detect_events(self, cur, ts, d8, d10, d15, state, last):
         """Log an event when a status category changes vs `state`; `last` = last emit
         epoch per category, to debounce sub-3s flips (buffered-replay bursts)."""
-        # Corrected 2026-07-08 vs Car-Online: ignition = engine running (d8 0x0400);
-        # label = immobilizer tag (d15 0x02 set = absent). The old data[15] "ignition"
-        # was really the transponder/label, and d8 0x0400 is the actual ignition.
+        # d8 0x0400 = moving/driving (motion; clears when the car stops -- NOT the engine
+        # key); data[15] 0x02 set = immobilizer tag absent. (Both confirmed vs Car-Online.)
         new = {"guard": "armed" if (d8 & 0x0200) else "disarmed",
                "valet": "on" if (d10 & 0x4000) else "off",
-               "ignition": "on" if (d8 & 0x0400) else "off",
+               "moving": "yes" if (d8 & 0x0400) else "no",
                "door": "open" if (d8 & 0x0004) else "closed",
                "label": "found" if not (d15 & 0x02) else "absent"}
         t = self._ts_epoch(ts)
@@ -436,15 +435,14 @@ class CarServer:
                     # cleared in valet, which otherwise reads as "disarmed").
                     self._kv(cur, "armed", "valet" if (d10 & 0x4000) else ("armed" if (d8 & 0x0200) else "disarmed"))
                     self._kv(cur, "valet", "on" if (d10 & 0x4000) else "off")
-                    # ignition (engine running) = d8 & 0x0400 -- verified against Car-Online
-                    # "Ignition ON/OFF" (sets at ride start, clears at ride end).
-                    self._kv(cur, "ignition", "on" if (d8 & 0x0400) else "off")
+                    # moving / driving (debounced ride state) = d8 & 0x0400: sets when the
+                    # car is actually being driven, clears the moment it stops (tracks GPS
+                    # speed, with hysteresis through brief stops). This is MOTION, not the
+                    # engine key -- a true ACC/ignition signal isn't cleanly in this word.
+                    self._kv(cur, "moving", "yes" if (d8 & 0x0400) else "no")
                     # label / transponder (метка) = data[15] & 0x02: SET -> tag absent,
-                    # 0 -> tag found. This bit (previously mis-read as "ignition") actually
-                    # tracks the immobilizer tag -- confirmed vs Car-Online "Transponder
-                    # found / not found" (2026-07-08).
+                    # 0 -> tag found (confirmed vs Car-Online "Transponder found/not found").
                     self._kv(cur, "label", "found" if not (data[15] & 0x02) else "absent")
-                    self._kv(cur, "moving", "yes" if (d10 & 0x0010) else "no")
                     self._detect_events(cur, now(), d8, d10, data[15], self._estate, self._elast)
                 elif typ == 0x0270 and len(data) >= 3:
                     t = data[2] - 256 if data[2] >= 128 else data[2]
