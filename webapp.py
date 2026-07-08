@@ -115,7 +115,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #tabs .tab.on{color:#0b6;border-bottom-color:#0b6;font-weight:600}
  .er{display:flex;gap:10px;padding:2px 16px;border-bottom:1px solid #f0f0f0}
  .et{color:#aaa;flex:0 0 150px} .ee{font-weight:600}
- .ek-security{color:#c77700} .ek-ignition{color:#2a6fd6} .ek-door{color:#8a6d1c} .ek-conn{color:#999} .ek-motion{color:#1c8a4e} .ek-engine{color:#0b6}
+ .ek-security{color:#c77700} .ek-ignition{color:#2a6fd6} .ek-door{color:#8a6d1c} .ek-conn{color:#999} .ek-motion{color:#1c8a4e} .ek-engine{color:#0b6} .ek-label{color:#7b1fa2}
  .jr{display:flex;gap:10px;padding:2px 16px;border-bottom:1px solid #f0f0f0}
  .jt{color:#aaa;flex:0 0 88px} .js{color:#333;overflow:hidden;text-overflow:ellipsis}
  .jd{flex:0 0 62px;font-weight:700}
@@ -174,6 +174,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
   <div id="mapbadges">
     <div class="mbadge unk" id="mb_armed"><div class="disc"></div><div class="cap"></div></div>
     <div class="mbadge unk" id="mb_ign"><div class="disc"></div><div class="cap"></div></div>
+    <div class="mbadge unk" id="mb_label"><div class="disc"></div><div class="cap"></div></div>
   </div>
 </div>
 <div id="bottom">
@@ -379,6 +380,10 @@ async function tick(){
   if(iv==='on'){ igd.innerHTML=ICONS.engine; igc.textContent='Ignition on'; ig.className='mbadge on'; }
   else if(iv==='off'){ igd.innerHTML=ICONS.engine; igc.textContent='Ignition off'; ig.className='mbadge ignoff'; }
   else { igd.innerHTML=ICONS.engine; igc.textContent='—'; ig.className='mbadge unk'; }
+  var lb=document.getElementById('mb_label'), lbd=lb.firstElementChild, lbc=lb.lastElementChild, lv=(kv.label||'').toLowerCase();
+  if(lv==='found'){ lbd.innerHTML=ICONS.key; lbc.textContent='Label'; lb.className='mbadge on'; }
+  else if(lv==='absent'){ lbd.innerHTML=ICONS.key; lbc.textContent='No label'; lb.className='mbadge ignoff'; }
+  else { lbd.innerHTML=ICONS.key; lbc.textContent='—'; lb.className='mbadge unk'; }
   document.getElementById('statetime').textContent = kv.last_seen? localTime(kv.last_seen) : (p?localTime(p.dev_time||p.recv_ts):'');
   document.getElementById('evt').textContent =
     (p?'':'waiting for data')+

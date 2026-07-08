@@ -268,7 +268,7 @@ class CarServer:
         ("valet", "on"): ("security", "Valet mode on"), ("valet", "off"): ("security", "Valet mode off"),
         ("ignition", "on"): ("ignition", "Ignition on"), ("ignition", "off"): ("ignition", "Ignition off"),
         ("door", "open"): ("door", "Door open"), ("door", "closed"): ("door", "Door closed"),
-        ("engine", "on"): ("engine", "Engine on"), ("engine", "off"): ("engine", "Engine off"),
+        ("label", "found"): ("label", "Label found"), ("label", "absent"): ("label", "Label not found"),
     }
 
     def _emit_event(self, cur, ts, kind, event):
@@ -286,14 +286,14 @@ class CarServer:
     def _detect_events(self, cur, ts, d8, d10, d15, state, last):
         """Log an event when a status category changes vs `state`; `last` = last emit
         epoch per category, to debounce sub-3s flips (buffered-replay bursts)."""
+        # Corrected 2026-07-08 vs Car-Online: ignition = engine running (d8 0x0400);
+        # label = immobilizer tag (d15 0x02 set = absent). The old data[15] "ignition"
+        # was really the transponder/label, and d8 0x0400 is the actual ignition.
         new = {"guard": "armed" if (d8 & 0x0200) else "disarmed",
                "valet": "on" if (d10 & 0x4000) else "off",
-               "ignition": "off" if (d15 & 0x02) else "on",
+               "ignition": "on" if (d8 & 0x0400) else "off",
                "door": "open" if (d8 & 0x0004) else "closed",
-               # d8 0x0400 tracks the engine running: it sets at ride start and clears
-               # at ride end (verified against Car-Online rides), distinct from the
-               # data[15] ACC/key "ignition" bit above.
-               "engine": "on" if (d8 & 0x0400) else "off"}
+               "label": "found" if not (d15 & 0x02) else "absent"}
         t = self._ts_epoch(ts)
         for cat, val in new.items():
             prev = state.get(cat)
@@ -436,9 +436,14 @@ class CarServer:
                     # cleared in valet, which otherwise reads as "disarmed").
                     self._kv(cur, "armed", "valet" if (d10 & 0x4000) else ("armed" if (d8 & 0x0200) else "disarmed"))
                     self._kv(cur, "valet", "on" if (d10 & 0x4000) else "off")
-                    # ignition: data[15] bit 0x02 = OFF/parked (reliable), 0x00 = ON.
-                    # (d10 bit 0x2000 was WRONG -- it stays set even when parked/ign-off.)
-                    self._kv(cur, "ignition", "off" if (data[15] & 0x02) else "on")
+                    # ignition (engine running) = d8 & 0x0400 -- verified against Car-Online
+                    # "Ignition ON/OFF" (sets at ride start, clears at ride end).
+                    self._kv(cur, "ignition", "on" if (d8 & 0x0400) else "off")
+                    # label / transponder (метка) = data[15] & 0x02: SET -> tag absent,
+                    # 0 -> tag found. This bit (previously mis-read as "ignition") actually
+                    # tracks the immobilizer tag -- confirmed vs Car-Online "Transponder
+                    # found / not found" (2026-07-08).
+                    self._kv(cur, "label", "found" if not (data[15] & 0x02) else "absent")
                     self._kv(cur, "moving", "yes" if (d10 & 0x0010) else "no")
                     self._detect_events(cur, now(), d8, d10, data[15], self._estate, self._elast)
                 elif typ == 0x0270 and len(data) >= 3:
