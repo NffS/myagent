@@ -32,9 +32,12 @@ DB = "/root/captures/car.db"
 AUTH = None  # expected "Basic <base64(user:pass)>" header, or None to disable
 # build id = this file's mtime; changes on every deploy so open pages auto-reload
 try:
-    BUILD = str(int(os.path.getmtime(os.path.abspath(__file__))))
+    _mt = os.path.getmtime(os.path.abspath(__file__))
+    BUILD = str(int(_mt))
+    APP_VER = datetime.datetime.utcfromtimestamp(_mt).strftime("%d %b %H:%M")
 except OSError:
     BUILD = "0"
+    APP_VER = "?"
 
 
 def q(sql, args=()):
@@ -90,6 +93,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #trackbtn{background:none;border:none;cursor:pointer;color:#333;padding:0;line-height:0;display:flex;align-items:center}
  #trackbtn svg{width:22px;height:22px}
  #trackbtn.on{color:#0b6}
+ #ver{position:fixed;top:4px;right:8px;z-index:1200;font-size:10px;color:#9a9a9a;background:rgba(255,255,255,.65);padding:1px 6px;border-radius:6px;pointer-events:none;line-height:1.3;white-space:nowrap}
  #trackbar .tlabel{color:#888;font-weight:700;margin-right:2px}
  #trackbar .tbtn{border:1px solid #ccc;background:#fff;border-radius:6px;padding:3px 9px;cursor:pointer;color:#444;white-space:nowrap;font-family:system-ui;font-size:12px}
  #trackbar .tbtn:hover{border-color:#0b6}
@@ -148,6 +152,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #ctoast{font-size:12px;color:#777;margin-top:10px;min-height:16px}
  .gtip{position:absolute;pointer-events:none;background:#0b6;color:#fff;font-size:11px;font-weight:600;padding:1px 6px;border-radius:4px;transform:translate(10px,-26px);white-space:nowrap;z-index:5}
 </style></head><body>
+<div id="ver"></div>
 <div id="top">
   <button id="menubtn" title="Controls">☰</button>
   <button id="trackbtn" title="Track period"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg></button>
@@ -214,7 +219,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
   <div id="ghint">drag across the chart to zoom · double-click to reset</div></div>
 </div>
 <script>
-var BUILD='__BUILD__';
+var BUILD='__BUILD__'; var APPVER='__APPVER__';
 var map=L.map('map').setView([0,0],2), marker=null, trackLayer=null, centered=false;
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
   {maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
@@ -360,6 +365,8 @@ async function tick(){
   var stale = kv.last_seen ? (Date.now()-new Date(kv.last_seen.replace(' ','T')+'Z').getTime())>120000 : true;
   document.getElementById('online').textContent=(stale?'offline':'online');
   document.getElementById('online').style.color=stale?'#c0392b':'#3aa76d';
+  try{ var vv=document.getElementById('ver'); if(vv){ vv.textContent='app '+APPVER+'  ·  srv '+(kv.server_version||'?');
+       vv.title='device fw: '+(kv.version||'?')+'   (build times, UTC)'; } }catch(e){}
   // rebuild pictogram bar
   var top=document.getElementById('top');
   top.querySelectorAll('.chip').forEach(function(n){n.remove();});
@@ -509,7 +516,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             if self.path == "/" or self.path.startswith("/?") or self.path.startswith("/index"):
-                self._send(200, PAGE.replace("__BUILD__", BUILD), "text/html; charset=utf-8")
+                self._send(200, PAGE.replace("__BUILD__", BUILD).replace("__APPVER__", APP_VER), "text/html; charset=utf-8")
             elif self.path.startswith("/api/build"):
                 self._send(200, BUILD, "text/plain")
             elif self.path.startswith("/api/metric"):

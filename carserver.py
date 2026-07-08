@@ -150,6 +150,14 @@ class CarServer:
         self.db.execute("CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,"
                         "ts TEXT, kind TEXT, event TEXT)")
         self.db.commit()
+        # record this server build (file mtime) so the web UI can show the deployed version
+        try:
+            _mt = os.path.getmtime(os.path.abspath(__file__))
+            self.db.execute("INSERT OR REPLACE INTO kv(k,v,updated) VALUES('server_version',?,?)",
+                            (datetime.datetime.utcfromtimestamp(_mt).strftime("%d %b %H:%M"), now()))
+            self.db.commit()
+        except Exception:
+            pass
         self._jn = 0
         self._jlast = {}
         self._sigN = []
