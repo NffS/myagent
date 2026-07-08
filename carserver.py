@@ -284,10 +284,16 @@ class CarServer:
         return 0.0
 
     def _detect_events(self, cur, ts, d8, d10, d15, state, last):
-        """Log an event when a status category changes vs `state`; `last` = last emit
-        epoch per category, to debounce sub-3s flips (buffered-replay bursts)."""
+        """Emit an event when a category SETTLES at a new value. `state` = last EMITTED
+        value per category (not merely last-seen), `last` = last emit epoch. This kills
+        the duplicate bursts from buffered-reconnect replay: when the device reconnects it
+        dumps buffered records whose recv_ts bunch into 1-2s and whose bits bounce
+        (armed->disarmed->armed, etc.). Comparing to the last EMITTED value means a value
+        that flips away and back never re-fires, and a flip that reverts within DEBOUNCE
+        is dropped entirely. Real transitions in a drive are seconds+ apart, so untouched."""
         # d8 0x0400 = moving/driving (motion; clears when the car stops -- NOT the engine
         # key); data[15] 0x02 set = immobilizer tag absent. (Both confirmed vs Car-Online.)
+        DEBOUNCE = 2.0
         new = {"guard": "armed" if (d8 & 0x0200) else "disarmed",
                "valet": "on" if (d10 & 0x4000) else "off",
                "moving": "yes" if (d8 & 0x0400) else "no",
@@ -295,15 +301,18 @@ class CarServer:
                "label": "found" if not (d15 & 0x02) else "absent"}
         t = self._ts_epoch(ts)
         for cat, val in new.items():
-            prev = state.get(cat)
-            state[cat] = val
-            if prev is not None and prev != val:
-                if t - last.get(cat, 0.0) < 0.5:  # drop only sub-0.5s flicker (replay bursts)
-                    last[cat] = t
-                    continue
-                last[cat] = t
-                kind, label = self.EV_LABELS.get((cat, val), (cat, val))
-                self._emit_event(cur, ts, kind, label)
+            prev = state.get(cat)            # last EMITTED value for this category
+            if prev is None:
+                state[cat] = val             # seed on first sight -- no event
+                continue
+            if val == prev:
+                continue                     # unchanged vs last emitted -> no duplicate
+            if t - last.get(cat, 0.0) < DEBOUNCE:
+                continue                     # flipped/reverted within the settle window -> drop
+            last[cat] = t
+            state[cat] = val                 # commit the newly emitted value
+            kind, label = self.EV_LABELS.get((cat, val), (cat, val))
+            self._emit_event(cur, ts, kind, label)
 
     def _event_locked(self, kind, event):
         """Log a standalone event (e.g. connectivity) taking the db lock ourselves."""
