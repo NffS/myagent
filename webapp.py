@@ -120,11 +120,11 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  /* journal */
  .pane{max-height:26vh;overflow:auto;background:#fafafa;border-top:1px solid #e3e3e3;
        font-family:ui-monospace,Consolas,monospace;font-size:12px}
- #tabs{display:flex;background:#f0f0f0;border-top:1px solid #e3e3e3}
- #tabs .tab{border:none;background:none;padding:6px 16px;cursor:pointer;font-size:13px;color:#666;border-bottom:2px solid transparent;font-family:system-ui}
+ #tabs{display:flex;align-items:stretch;background:#f0f0f0;border-top:1px solid #e3e3e3;cursor:pointer;user-select:none}
+ #tabs .tab{border:none;background:none;padding:9px 18px;cursor:pointer;font-size:14px;color:#666;border-bottom:2px solid transparent;font-family:system-ui}
  #tabs .tab.on{color:#0b6;border-bottom-color:#0b6;font-weight:600}
- #panetoggle{margin-left:auto;border:none;background:none;cursor:pointer;color:#666;font-size:15px;padding:4px 14px;line-height:1}
- #panetoggle:hover{color:#0b6}
+ #panetoggle{margin-left:auto;border:none;background:none;cursor:pointer;color:#888;font-size:18px;padding:6px 18px;line-height:1;pointer-events:none}
+ #tabs:hover #panetoggle{color:#0b6}
  .er{display:flex;gap:10px;padding:2px 16px;border-bottom:1px solid #f0f0f0}
  .et{color:#aaa;flex:0 0 150px} .ee{font-weight:600}
  .ek-security{color:#c77700} .ek-ignition{color:#2a6fd6} .ek-door{color:#8a6d1c} .ek-conn{color:#999} .ek-motion{color:#1c8a4e} .ek-engine{color:#0b6} .ek-label{color:#7b1fa2}
@@ -245,7 +245,7 @@ var follow=false;
 function setFollow(on){
   follow=on;
   var b=document.querySelector('.followbtn'); if(b) b.classList.toggle('on', follow);
-  if(follow && marker){ map.setView(marker.getLatLng(), Math.max(map.getZoom(), 16)); }
+  if(follow && marker){ map.invalidateSize(); map.setView(marker.getLatLng(), Math.max(map.getZoom(), 16)); }
 }
 var followCtl=L.control({position:'topleft'});
 followCtl.onAdd=function(){
@@ -439,7 +439,7 @@ async function tick(){
     if(!marker){marker=L.marker(ll).addTo(map);}
     marker.setLatLng(ll);
     marker.setIcon(moving&&hd!=null?arrowIcon(hd):pinIcon);
-    if(!centered){ map.setView(ll,16); centered=true; }
+    if(!centered){ map.invalidateSize(); map.setView(ll,16); centered=true; }
     else if(follow){ map.panTo(ll); }
     geocode(p.lat,p.lon); }
   refreshList('journal'); refreshList('events');   // incremental (prepend new); scroll loads older
@@ -513,12 +513,13 @@ function showPanes(){
   var pt=document.getElementById('panetoggle'); if(pt) pt.textContent=paneOpen?'▾':'▸';
 }
 document.getElementById('tabs').addEventListener('click',function(e){
-  if(e.target.id==='panetoggle'){ paneOpen=!paneOpen; showPanes(); relayout(); return; }
-  if(!e.target.classList.contains('tab')) return;
-  var t=e.target.getAttribute('data-tab');
-  var bs=document.querySelectorAll('#tabs .tab');
-  for(var i=0;i<bs.length;i++) bs[i].classList.toggle('on', bs[i].getAttribute('data-tab')===t);
-  paneOpen=true; showPanes(); relayout();
+  var tb=e.target.closest('.tab');
+  if(tb){   // a tab button -> switch to it and make sure the pane is open
+    var bs=document.querySelectorAll('#tabs .tab');
+    for(var i=0;i<bs.length;i++) bs[i].classList.toggle('on', bs[i]===tb);
+    paneOpen=true; showPanes(); relayout(); return;
+  }
+  paneOpen=!paneOpen; showPanes(); relayout();   // click anywhere else on the bar toggles collapse
 });
 // ---- events / journal feeds: incremental live-prepend + load-older on scroll ----
 var evState={newest:null,oldest:null,loading:false,done:false};
