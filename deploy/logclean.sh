@@ -29,15 +29,17 @@ while [ "$(total)" -gt "$FILE_MAXBYTES" ]; do
     rm -f "$oldest"
 done
 
-# 2b) DB retention: keep only the last 90 days of time-series data in car.db
+# 2b) DB retention: raw journal 7 days, all other time-series data 90 days
 python3 - <<'PY' 2>&1 | sed 's/^/  db: /'
 import sqlite3, datetime
 d = sqlite3.connect('/root/captures/car.db', timeout=15)
-cut = (datetime.datetime.now() - datetime.timedelta(days=90)).strftime('%Y-%m-%d %H:%M:%S')
-for t, c in (('metrics', 'ts'), ('position', 'recv_ts'), ('telemetry', 'recv_ts')):
+now = datetime.datetime.now()
+for t, c, days in (('metrics','ts',90), ('events','ts',90), ('position','recv_ts',90),
+                   ('telemetry','recv_ts',90), ('journal','ts',7)):
+    cut = (now - datetime.timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
     try:
         n = d.execute('DELETE FROM %s WHERE %s < ?' % (t, c), (cut,)).rowcount
-        d.commit(); print('%s: purged %d rows older than 90d' % (t, n))
+        d.commit(); print('%s: purged %d rows older than %dd' % (t, n, days))
     except Exception as e:
         print('%s: %s' % (t, e))
 PY

@@ -358,12 +358,17 @@ class CarServer:
         self.db.commit()
         self._estate, self._elast = state, last  # continue live detection from the last state
 
-    def purge_old(self, days=90):
-        """Retention: keep only the last `days` of history in the time-series tables."""
-        cutoff = (datetime.datetime.now() - datetime.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    # retention per table: (table, time-column, days) -- raw journal 7d, everything else 90d
+    RETENTION = (("metrics", "ts", 90), ("events", "ts", 90), ("position", "recv_ts", 90),
+                 ("telemetry", "recv_ts", 90), ("journal", "ts", 7))
+
+    def purge_old(self):
+        """Retention: keep the raw journal 7 days, all other history 90 days."""
+        now = datetime.datetime.now()
         cur = self.db.cursor()
-        for tbl, col in (("metrics", "ts"), ("events", "ts"), ("position", "recv_ts"), ("telemetry", "recv_ts")):
-            cur.execute("DELETE FROM %s WHERE %s < ?" % (tbl, col), (cutoff,))
+        for tbl, col, days in self.RETENTION:
+            cut = (now - datetime.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+            cur.execute("DELETE FROM %s WHERE %s < ?" % (tbl, col), (cut,))
         self.db.commit()
 
     def log(self, msg):
@@ -533,8 +538,9 @@ class CarServer:
             cur = self.db.cursor()
             cur.execute("INSERT INTO journal(ts,dir,summary) VALUES(?,?,?)", (now(), direction, text))
             self._jn += 1
-            if self._jn % 50 == 0:
-                cur.execute("DELETE FROM journal WHERE id < (SELECT max(id)-800 FROM journal)")
+            if self._jn % 500 == 0:   # keep the raw journal to ~7 days (time-based)
+                cut = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+                cur.execute("DELETE FROM journal WHERE ts < ?", (cut,))
             self.db.commit()
 
     def summary(self, f):
