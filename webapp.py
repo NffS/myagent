@@ -123,6 +123,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #tabs{display:flex;background:#f0f0f0;border-top:1px solid #e3e3e3}
  #tabs .tab{border:none;background:none;padding:6px 16px;cursor:pointer;font-size:13px;color:#666;border-bottom:2px solid transparent;font-family:system-ui}
  #tabs .tab.on{color:#0b6;border-bottom-color:#0b6;font-weight:600}
+ #panetoggle{margin-left:auto;border:none;background:none;cursor:pointer;color:#666;font-size:15px;padding:4px 14px;line-height:1}
+ #panetoggle:hover{color:#0b6}
  .er{display:flex;gap:10px;padding:2px 16px;border-bottom:1px solid #f0f0f0}
  .et{color:#aaa;flex:0 0 150px} .ee{font-weight:600}
  .ek-security{color:#c77700} .ek-ignition{color:#2a6fd6} .ek-door{color:#8a6d1c} .ek-conn{color:#999} .ek-motion{color:#1c8a4e} .ek-engine{color:#0b6} .ek-label{color:#7b1fa2}
@@ -215,6 +217,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <div id="tabs">
   <button class="tab on" data-tab="events">Events</button>
   <button class="tab" data-tab="journal">Raw journal</button>
+  <button id="panetoggle" title="Collapse / expand">▾</button>
 </div>
 <div id="ewrap" class="pane"><div id="elist"></div></div>
 <div id="jwrap" class="pane" style="display:none"><div id="jlist"></div></div>
@@ -254,6 +257,12 @@ followCtl.onAdd=function(){
 };
 followCtl.addTo(map);
 map.on('dragstart', function(){ if(follow) setFollow(false); });   // manual pan cancels follow
+// keep Leaflet's size in sync when the layout changes (trackbar/pane toggle, window
+// resize) -- otherwise its cached size is stale and centering drops the car behind the
+// bottom panel. Re-center afterwards if we're following.
+function relayout(){ setTimeout(function(){ map.invalidateSize(); if(follow && marker) map.panTo(marker.getLatLng()); }, 60); }
+window.addEventListener('resize', relayout);
+setTimeout(function(){ map.invalidateSize(); }, 400);   // correct any stale initial size
 var pinIcon=new L.Icon.Default();
 // bearing (deg) from point a[lat,lon] to b[lat,lon]
 function bearing(a,b){var la1=a[0]*Math.PI/180,la2=b[0]*Math.PI/180,dl=(b[1]-a[1])*Math.PI/180;
@@ -353,7 +362,7 @@ function setTrackMode(m,btn){
 (function(){
   var tb=document.getElementById('trackbar'); if(!tb) return;
   var tbtn=document.getElementById('trackbtn');
-  if(tbtn) tbtn.addEventListener('click',function(){ var on=tb.classList.toggle('show'); tbtn.classList.toggle('on',on); });
+  if(tbtn) tbtn.addEventListener('click',function(){ var on=tb.classList.toggle('show'); tbtn.classList.toggle('on',on); relayout(); });
   var midnight=function(x){var d=new Date(x);d.setHours(0,0,0,0);return d;};
   var toLocalInput=function(d){return d.getFullYear()+'-'+z2(d.getMonth()+1)+'-'+z2(d.getDate())+'T'+z2(d.getHours())+':'+z2(d.getMinutes());};
   document.getElementById('tbfrom').value=toLocalInput(new Date(Date.now()-86400000));
@@ -433,18 +442,7 @@ async function tick(){
     if(!centered){ map.setView(ll,16); centered=true; }
     else if(follow){ map.panTo(ll); }
     geocode(p.lat,p.lon); }
-  var jr=await (await fetch('/api/journal',{cache:'no-store'})).json();
-  document.getElementById('jlist').innerHTML=jr.map(function(e){
-    var dev=e.dir==='device';
-    return '<div class="jr"><span class="jt">'+timeOnly(e.ts)+'</span>'+
-      '<span class="jd '+(dev?'dev':'srv')+'">'+(dev?'DEV →':'← SRV')+'</span>'+
-      '<span class="js">'+e.summary+'</span></div>';
-  }).join('');
-  var ev=await (await fetch('/api/events',{cache:'no-store'})).json();
-  document.getElementById('elist').innerHTML=ev.map(function(e){
-    return '<div class="er"><span class="et">'+localTime(e.ts)+'</span>'+
-      '<span class="ee ek-'+(e.kind||'')+'">'+e.event+'</span></div>';
-  }).join('') || '<div style="padding:16px;color:#888">no events yet — they log as the car changes state</div>';
+  refreshList('journal'); refreshList('events');   // incremental (prepend new); scroll loads older
  }catch(e){ document.getElementById('online').textContent='error: '+e; }
 }
 var uplotInst=null, gMetric=null, gLabel=null, gHours=6;
@@ -507,19 +505,63 @@ function sendCommand(cmd,label){
     .then(function(j){ t.textContent=label+' → '+(j.msg||(j.ok?'sent':'no response')); })
     .catch(function(e){ t.textContent=label+' → error: '+e; });
 }
+var paneOpen=true;
+function showPanes(){
+  var on=document.querySelector('#tabs .tab.on'); var t=on?on.getAttribute('data-tab'):'events';
+  document.getElementById('ewrap').style.display=(paneOpen&&t==='events')?'':'none';
+  document.getElementById('jwrap').style.display=(paneOpen&&t==='journal')?'':'none';
+  var pt=document.getElementById('panetoggle'); if(pt) pt.textContent=paneOpen?'▾':'▸';
+}
 document.getElementById('tabs').addEventListener('click',function(e){
+  if(e.target.id==='panetoggle'){ paneOpen=!paneOpen; showPanes(); relayout(); return; }
   if(!e.target.classList.contains('tab')) return;
   var t=e.target.getAttribute('data-tab');
   var bs=document.querySelectorAll('#tabs .tab');
   for(var i=0;i<bs.length;i++) bs[i].classList.toggle('on', bs[i].getAttribute('data-tab')===t);
-  document.getElementById('ewrap').style.display=(t==='events')?'':'none';
-  document.getElementById('jwrap').style.display=(t==='journal')?'':'none';
+  paneOpen=true; showPanes(); relayout();
 });
+// ---- events / journal feeds: incremental live-prepend + load-older on scroll ----
+var evState={newest:null,oldest:null,loading:false,done:false};
+var jrState={newest:null,oldest:null,loading:false,done:false};
+function evRow(e){ return '<div class="er"><span class="et">'+localTime(e.ts)+'</span><span class="ee ek-'+(e.kind||'')+'">'+e.event+'</span></div>'; }
+function jrRow(e){ var dev=e.dir==='device'; return '<div class="jr"><span class="jt">'+timeOnly(e.ts)+'</span><span class="jd '+(dev?'dev':'srv')+'">'+(dev?'DEV →':'← SRV')+'</span><span class="js">'+e.summary+'</span></div>'; }
+async function refreshList(kind){
+  var st=kind==='events'?evState:jrState, base='/api/'+kind, row=kind==='events'?evRow:jrRow;
+  var el=document.getElementById(kind==='events'?'elist':'jlist');
+  var url=st.newest!=null?base+'?after='+st.newest:base+'?limit=100', arr;
+  try{ arr=await (await fetch(url,{cache:'no-store'})).json(); }catch(e){ return; }
+  if(st.newest!=null){ if(arr.length){ el.insertAdjacentHTML('afterbegin', arr.map(row).join('')); st.newest=arr[0].id; } }
+  else { el.innerHTML=arr.map(row).join('')||(kind==='events'?'<div style="padding:16px;color:#888">no events yet — they log as the car changes state</div>':'');
+         if(arr.length){ st.newest=arr[0].id; st.oldest=arr[arr.length-1].id; } }
+}
+async function loadOlder(kind){
+  var st=kind==='events'?evState:jrState;
+  if(st.loading||st.done||st.oldest==null) return; st.loading=true;
+  var base='/api/'+kind, row=kind==='events'?evRow:jrRow, el=document.getElementById(kind==='events'?'elist':'jlist'), arr;
+  try{ arr=await (await fetch(base+'?before='+st.oldest+'&limit=50',{cache:'no-store'})).json(); }catch(e){ st.loading=false; return; }
+  if(arr.length){ el.insertAdjacentHTML('beforeend', arr.map(row).join('')); st.oldest=arr[arr.length-1].id; }
+  if(arr.length<50) st.done=true;
+  st.loading=false;
+}
+document.getElementById('ewrap').addEventListener('scroll',function(){ if(this.scrollTop+this.clientHeight>=this.scrollHeight-48) loadOlder('events'); });
+document.getElementById('jwrap').addEventListener('scroll',function(){ if(this.scrollTop+this.clientHeight>=this.scrollHeight-48) loadOlder('journal'); });
 tick(); setInterval(tick,5000);
 </script></body></html>"""
 
 
 class Handler(BaseHTTPRequestHandler):
+    def _page_args(self):
+        """Parse ?after=/?before=/?limit= for the journal/events feeds (cursor = row id)."""
+        qs = parse_qs(urlparse(self.path).query)
+        def _i(k):
+            v = (qs.get(k) or [None])[0]
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                return None
+        lim = _i("limit") or 100
+        return _i("after"), _i("before"), max(1, min(lim, 500))
+
     def _send(self, code, body, ctype):
         b = body.encode("utf-8") if isinstance(body, str) else body
         self.send_response(code)
@@ -603,12 +645,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps([[r[0], r[1], round((r[2] or 0) * 1.852, 1), r[3]]
                                             for r in rows]), "application/json")
             elif self.path.startswith("/api/journal"):
-                rows = q("SELECT ts,dir,summary FROM journal ORDER BY id DESC LIMIT 400")
-                self._send(200, json.dumps([{"ts": r[0], "dir": r[1], "summary": r[2]}
+                a, b, lim = self._page_args()
+                if a is not None:
+                    rows = q("SELECT id,ts,dir,summary FROM journal WHERE id>? ORDER BY id DESC LIMIT 300", (a,))
+                elif b is not None:
+                    rows = q("SELECT id,ts,dir,summary FROM journal WHERE id<? ORDER BY id DESC LIMIT ?", (b, lim))
+                else:
+                    rows = q("SELECT id,ts,dir,summary FROM journal ORDER BY id DESC LIMIT ?", (lim,))
+                self._send(200, json.dumps([{"id": r[0], "ts": r[1], "dir": r[2], "summary": r[3]}
                                             for r in rows]), "application/json")
             elif self.path.startswith("/api/events"):
-                rows = q("SELECT ts,kind,event FROM events ORDER BY id DESC LIMIT 100")
-                self._send(200, json.dumps([{"ts": r[0], "kind": r[1], "event": r[2]}
+                a, b, lim = self._page_args()
+                if a is not None:
+                    rows = q("SELECT id,ts,kind,event FROM events WHERE id>? ORDER BY id DESC LIMIT 300", (a,))
+                elif b is not None:
+                    rows = q("SELECT id,ts,kind,event FROM events WHERE id<? ORDER BY id DESC LIMIT ?", (b, lim))
+                else:
+                    rows = q("SELECT id,ts,kind,event FROM events ORDER BY id DESC LIMIT ?", (lim,))
+                self._send(200, json.dumps([{"id": r[0], "ts": r[1], "kind": r[2], "event": r[3]}
                                             for r in rows]), "application/json")
             elif self.path.startswith("/api/command"):
                 cmd = (parse_qs(urlparse(self.path).query).get("cmd") or [""])[0]
