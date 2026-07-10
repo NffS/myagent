@@ -109,6 +109,11 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  .brow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
  #statetime{font-size:12.5px;color:#666}
  .speedleg{background:rgba(255,255,255,.82);padding:2px 7px;border-radius:6px;font-size:11px;color:#444}
+ .followbtn{display:flex;align-items:center;justify-content:center;width:30px;height:30px;background:#fff;border:2px solid rgba(0,0,0,.2);border-radius:4px;color:#444;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.2)}
+ .followbtn svg{width:18px;height:18px}
+ .followbtn:hover{background:#f4f4f4}
+ .followbtn.on{background:#0b6;color:#fff;border-color:#0b6}
+ .followbtn.on:hover{background:#0aa25e}
  /* (armed/ignition now shown as #mapbadges overlaid on the map) */
  #addrwrap{flex:1 1 auto;min-width:0}
  #addr{font-size:13.5px;line-height:1.25} #evt{font-size:12px;color:#888}
@@ -231,6 +236,24 @@ var legend=L.control({position:'bottomright'});
 legend.onAdd=function(){var d=L.DomUtil.create('div','speedleg');
   d.innerHTML='track: <b style="color:hsl(0,90%,45%)">slow</b> · <b style="color:hsl(120,90%,45%)">~55</b> · <b style="color:hsl(240,90%,45%)">100+ km/h</b>';return d;};
 legend.addTo(map);
+// "follow the car" toggle: recenters on the marker and keeps it centered while moving;
+// a manual pan turns it back off.
+var follow=false;
+function setFollow(on){
+  follow=on;
+  var b=document.querySelector('.followbtn'); if(b) b.classList.toggle('on', follow);
+  if(follow && marker){ map.setView(marker.getLatLng(), Math.max(map.getZoom(), 16)); }
+}
+var followCtl=L.control({position:'topleft'});
+followCtl.onAdd=function(){
+  var a=L.DomUtil.create('a','followbtn'); a.href='#'; a.title='Center on car (follow)';
+  a.innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3.4"/><path d="M12 2v3.4M12 18.6V22M2 12h3.4M18.6 12H22"/></svg>';
+  L.DomEvent.disableClickPropagation(a);
+  L.DomEvent.on(a,'click',function(e){ L.DomEvent.preventDefault(e); setFollow(!follow); });
+  return a;
+};
+followCtl.addTo(map);
+map.on('dragstart', function(){ if(follow) setFollow(false); });   // manual pan cancels follow
 var pinIcon=new L.Icon.Default();
 // bearing (deg) from point a[lat,lon] to b[lat,lon]
 function bearing(a,b){var la1=a[0]*Math.PI/180,la2=b[0]*Math.PI/180,dl=(b[1]-a[1])*Math.PI/180;
@@ -407,7 +430,8 @@ async function tick(){
     if(!marker){marker=L.marker(ll).addTo(map);}
     marker.setLatLng(ll);
     marker.setIcon(moving&&hd!=null?arrowIcon(hd):pinIcon);
-    if(!centered){map.setView(ll,16);centered=true;}
+    if(!centered){ map.setView(ll,16); centered=true; }
+    else if(follow){ map.panTo(ll); }
     geocode(p.lat,p.lon); }
   var jr=await (await fetch('/api/journal',{cache:'no-store'})).json();
   document.getElementById('jlist').innerHTML=jr.map(function(e){
