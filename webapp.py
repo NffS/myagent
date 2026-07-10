@@ -241,7 +241,7 @@ legend.onAdd=function(){var d=L.DomUtil.create('div','speedleg');
 legend.addTo(map);
 // "follow the car" toggle: recenters on the marker and keeps it centered while moving;
 // a manual pan turns it back off.
-var follow=false;
+var follow=true;   // follow-the-car is ON by default on load (a manual pan turns it off)
 function setFollow(on){
   follow=on;
   var b=document.querySelector('.followbtn'); if(b) b.classList.toggle('on', follow);
@@ -256,6 +256,7 @@ followCtl.onAdd=function(){
   return a;
 };
 followCtl.addTo(map);
+setFollow(true);   // reflect the default-on state on the button
 map.on('dragstart', function(){ if(follow) setFollow(false); });   // manual pan cancels follow
 // keep Leaflet's size in sync when the layout changes (trackbar/pane toggle, window
 // resize) -- otherwise its cached size is stale and centering drops the car behind the
