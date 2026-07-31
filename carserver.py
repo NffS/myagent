@@ -163,8 +163,9 @@ class CarServer:
         self._jlast = {}
         self._sigN = []
         self._metric_last = 0
-        self._estate = {}   # last-seen state per event category (for transition detection)
-        self._elast = {}    # last emit epoch per category (debounce rapid flips)
+        self._estate = {}   # last EMITTED value per event category (transition detection)
+        self._elast = {}    # pending candidate per category: (value, first_ts, first_epoch)
+        self._sms = {}      # in-flight incoming SMS being assembled: key -> row id + slices
         self._en = 0
         self.dblock = threading.Lock()
         self._trace_last = {}
@@ -176,6 +177,7 @@ class CarServer:
         self.backfill()
         self.backfill_metrics()
         self.backfill_events()
+        self.backfill_alarms_sms()
         self.purge_old()
 
     def backfill(self):
@@ -280,8 +282,68 @@ class CarServer:
         ("label", "found"): ("label", "Label found"), ("label", "absent"): ("label", "Label not found"),
     }
 
+    # d8 0x0100 = ALARM ACTIVE (the siren is going off). Across the 243k stored 0x0110
+    # frames this bit is set in exactly ONE episode -- 2026-07-31 08:25:49-51, the
+    # door-while-armed break-in Car-Online logged as "Alarm: door open" -- so it is an
+    # unambiguous alarm flag. NOTE: the derived (door && armed) condition is NOT usable
+    # as an alarm signal; it fires in 537 separate episodes (door-bit noise while
+    # parked, e.g. 2026-07-28 14:18-14:26 every 10s) that Car-Online does not report.
+    ALARM_BIT = 0x0100
+    # cause bits read from the same frame, most specific first -> event label
+    ALARM_CAUSES = ((0x0004, "Alarm: door open"),)
+    # seconds a new value must HOLD before it counts as a real transition
+    PERSIST = 0.5
+
     def _emit_event(self, cur, ts, kind, event):
         cur.execute("INSERT INTO events(ts,kind,event) VALUES(?,?,?)", (ts, kind, event))
+
+    # 0x0290 = INCOMING SMS, delivered as fixed 90-byte records that carry ~47 chars of
+    # text each:  #<sender>","","<yy/MM/dd,hh:mm:ss+tz>"<text slice>
+    # A longer SMS spans several records that all repeat the SAME header, so
+    # (sender, dev_time) identifies one message and the slices concatenate in arrival
+    # order. Two observed quirks: identical slices can be re-sent, and if a transmission
+    # was cut off the device restarts the message from the beginning -- so a full-width
+    # slice arriving after we already hold the (short) tail means "start over".
+    SMS_RE = re.compile(r'^#([^"]*)","([^"]*)","([^"]*)"(.*)$', re.S)
+    SMS_SLICE = 47      # full-width slice; a shorter one is the last slice of the message
+
+    @staticmethod
+    def _sms_clean(s):
+        """The text arrives with embedded newlines and octets that are not ASCII (the
+        device transliterates Cyrillic and drops some letters outright), so flatten
+        control chars and undecodable bytes to spaces -- one SMS reads as one line."""
+        flat = "".join(" " if (c < " " or c in "\x7f�") else c for c in s)
+        return re.sub(r" {2,}", " ", flat).strip()
+
+    def _sms_record(self, cur, ts, txt):
+        """Assemble an incoming SMS from its 0x0290 slices, keeping ONE event row per
+        message that is rewritten as later slices arrive (the total length is not
+        knowable from the first record). Returns True if a row was written."""
+        m = self.SMS_RE.match(txt)
+        if not m:
+            return False
+        sender, dev_time, sl = m.group(1), m.group(3), m.group(4)
+        key = (sender, dev_time)
+        st = self._sms.get(key)
+        if st is None:
+            st = self._sms[key] = {"id": None, "parts": [], "done": False, "ts": ts}
+            while len(self._sms) > 20:       # bounded: drop the oldest tracked message
+                self._sms.pop(next(iter(self._sms)))
+        elif st["done"] and len(sl) >= self.SMS_SLICE:
+            st["parts"], st["done"] = [], False   # restarted from the top -> same row
+        elif sl in st["parts"]:
+            return False                     # duplicate slice from a re-send -> ignore
+        st["parts"].append(sl)
+        st["done"] = len(sl) < self.SMS_SLICE
+        text = self._sms_clean("".join(st["parts"]))
+        label = "Incoming SMS: %s" % text if text else "Incoming SMS"
+        if st["id"] is None:
+            self._emit_event(cur, st["ts"], "sms", label)
+            st["id"] = cur.lastrowid
+            self.log("SMS from %r at %r: %s" % (sender, dev_time, text))
+        else:
+            cur.execute("UPDATE events SET event=? WHERE id=?", (label, st["id"]))
+        return True
 
     @staticmethod
     def _ts_epoch(ts):
@@ -293,43 +355,60 @@ class CarServer:
         return 0.0
 
     def _detect_events(self, cur, ts, d8, d10, d15, state, last):
-        """Emit an event when a category SETTLES at a new value. `state` = last EMITTED
-        value per category (not merely last-seen), `last` = last emit epoch. This kills
-        the duplicate bursts from buffered-reconnect replay: when the device reconnects it
-        dumps buffered records whose recv_ts bunch into 1-2s and whose bits bounce
-        (armed->disarmed->armed, etc.). Comparing to the last EMITTED value means a value
-        that flips away and back never re-fires, and a flip that reverts within DEBOUNCE
-        is dropped entirely. Real transitions in a drive are seconds+ apart, so untouched."""
+        """Emit an event when a category SETTLES at a new value.
+
+        `state` = last EMITTED value per category (not merely last-seen); `last` = the
+        pending candidate per category as (value, first_seen_ts, first_seen_epoch). A new
+        value is only emitted once a LATER frame >= PERSIST seconds away still carries it,
+        and the event is stamped with the moment the value FIRST appeared. A value that
+        reverts to the emitted one before being confirmed is discarded.
+
+        Persistence is what separates buffered-reconnect replay junk from real events.
+        After a dropout the device dumps buffered records whose bits bounce -- e.g. the
+        1ms d8&0x0004 blip at 2026-07-08 12:43:46.970 that produced a false "Door open"
+        while the car sat parked and armed. The previous rule (drop every 0x0110 frame
+        arriving <1.2s after the previous one) killed that, but used frame cadence as a
+        proxy for "replay", and real events burst too: it silently swallowed the whole
+        2026-07-31 08:25:48-55 break-in, whose door + disarm transitions all landed inside
+        1.0-1.1s gaps. How long a value HOLDS tells them apart -- a replay blip lasts
+        milliseconds, a real door stays open for seconds -- with no cadence assumption.
+
+        The alarm bit is exempt: it fires on the rising edge with no confirmation wait,
+        because a break-in must not be delayed and the bit has no known false positives."""
         # d8 0x0400 = moving/driving (motion; clears when the car stops -- NOT the engine
         # key); data[15] 0x02 set = immobilizer tag absent. (Both confirmed vs Car-Online.)
-        DEBOUNCE = 2.0
         new = {"guard": "armed" if (d8 & 0x0200) else "disarmed",
                "valet": "on" if (d10 & 0x4000) else "off",
                "moving": "yes" if (d8 & 0x0400) else "no",
                "door": "open" if (d8 & 0x0004) else "closed",
                "label": "found" if not (d15 & 0x02) else "absent"}
         t = self._ts_epoch(ts)
-        # Skip buffered-reconnect BURST frames: after a dropout the device replays buffered
-        # records <~1.2s apart whose bits bounce (e.g. a 1ms door blip while armed). Real
-        # states persist and are caught on the next normal-cadence frame, so nothing real
-        # is lost -- only the transient replay artifacts.
-        prevf = last.get("_frame")
-        last["_frame"] = t
-        if prevf is not None and (t - prevf) < 1.2:
-            return
         for cat, val in new.items():
             prev = state.get(cat)            # last EMITTED value for this category
             if prev is None:
                 state[cat] = val             # seed on first sight -- no event
                 continue
             if val == prev:
-                continue                     # unchanged vs last emitted -> no duplicate
-            if t - last.get(cat, 0.0) < DEBOUNCE:
-                continue                     # flipped/reverted within the settle window -> drop
-            last[cat] = t
+                last.pop(cat, None)          # back to the emitted value -> candidate died
+                continue
+            cand = last.get(cat)
+            if cand is None or cand[0] != val:
+                last[cat] = (val, ts, t)     # new candidate: remember when it appeared
+                continue
+            if t - cand[2] < self.PERSIST:
+                continue                     # hasn't held long enough to be believed yet
+            del last[cat]
             state[cat] = val                 # commit the newly emitted value
             kind, label = self.EV_LABELS.get((cat, val), (cat, val))
-            self._emit_event(cur, ts, kind, label)
+            self._emit_event(cur, cand[1], kind, label)   # stamp with first-seen ts
+        # alarm last, so that within one frame it lands ABOVE the transition that caused
+        # it in the (id-ordered) event feed -- matching how Car-Online lists them.
+        alarm = bool(d8 & self.ALARM_BIT)
+        if alarm and not state.get("alarm"):
+            label = next((lb for bit, lb in self.ALARM_CAUSES if d8 & bit), "Alarm")
+            self._emit_event(cur, ts, "alarm", label)
+            self.log("!!! ALARM d8=%04x d10=%04x d15=%02x -> %s" % (d8, d10, d15, label))
+        state["alarm"] = alarm
 
     def _event_locked(self, kind, event, ts=None):
         """Log a standalone event (e.g. connectivity) taking the db lock ourselves."""
@@ -357,6 +436,54 @@ class CarServer:
                 self._detect_events(cur, ts, b[8] | (b[9] << 8), b[10] | (b[11] << 8), b[15], state, last)
         self.db.commit()
         self._estate, self._elast = state, last  # continue live detection from the last state
+
+    # bump this when the backfill logic changes, to re-run it once over stored history
+    BACKFILL_TAG = "alarm+sms/1"
+
+    def backfill_alarms_sms(self):
+        """One-shot: seed alarm + incoming-SMS events from stored telemetry. Both kinds
+        were on the wire long before anything decoded them (the 0x0100 alarm bit and the
+        0x0290 SMS records were captured raw but never surfaced), so without this the
+        feed would only ever show them going forward. Guarded by a kv tag."""
+        cur = self.db.cursor()
+        tag = cur.execute("SELECT v FROM kv WHERE k='backfill_alarm_sms'").fetchone()
+        if tag and tag[0] == self.BACKFILL_TAG:
+            return
+        before = cur.execute("SELECT count(*) FROM events").fetchone()[0]
+        # alarms: rising edges of the alarm bit across the stored status frames
+        active = False
+        for ts, hx in cur.execute("SELECT recv_ts,hex FROM telemetry WHERE type='0x0110'"
+                                  " ORDER BY id").fetchall():
+            b = bytes.fromhex(hx)
+            if len(b) < 16:
+                continue
+            d8 = b[8] | (b[9] << 8)
+            on = bool(d8 & self.ALARM_BIT)
+            if on and not active:
+                self._emit_event(cur, ts, "alarm",
+                                 next((lb for bit, lb in self.ALARM_CAUSES if d8 & bit), "Alarm"))
+            active = on
+        # SMS: replay the slices through the live assembler so grouping/restart/dedup
+        # behave identically to the live path
+        self._sms = {}
+        for ts, hx in cur.execute("SELECT recv_ts,hex FROM telemetry WHERE type='0x0290'"
+                                  " ORDER BY id").fetchall():
+            self._sms_record(cur, ts, bytes.fromhex(hx).decode("ascii", "replace"))
+        self._sms = {}
+        added = cur.execute("SELECT count(*) FROM events").fetchone()[0] - before
+        if added:
+            # Keep id order == ts order: the events feed sorts and pages by id, and the
+            # rows just inserted carry historical timestamps with brand-new ids.
+            cur.execute("CREATE TABLE events_r(id INTEGER PRIMARY KEY,"
+                        " ts TEXT, kind TEXT, event TEXT)")
+            cur.execute("INSERT INTO events_r(ts,kind,event)"
+                        " SELECT ts,kind,event FROM events ORDER BY ts, id")
+            cur.execute("DROP TABLE events")
+            cur.execute("ALTER TABLE events_r RENAME TO events")
+        self._kv(cur, "backfill_alarm_sms", self.BACKFILL_TAG)
+        self.db.commit()
+        self.log("backfill %s: +%d events (alarm/sms) from stored telemetry"
+                 % (self.BACKFILL_TAG, added))
 
     # retention per table: (table, time-column, days) -- raw journal 7d, everything else 90d
     RETENTION = (("metrics", "ts", 90), ("events", "ts", 90), ("position", "recv_ts", 90),
@@ -439,8 +566,9 @@ class CarServer:
             elif typ in (0x0110, 0x0209, 0x0240, 0x0250, 0x0270, 0x0290, 0x0100, 0x0610):
                 # 0x0209 = discrete EVENT records (transponder/parking-brake/Event#NN/
                 # armed-by-remote etc. that Car-Online decodes). Stored raw for decoding.
+                rts = now()
                 cur.execute("INSERT INTO telemetry(recv_ts,type,hex) VALUES(?,?,?)",
-                            (now(), "0x%04x" % typ, data.hex()))
+                            (rts, "0x%04x" % typ, data.hex()))
                 # 0x0110 record layout (after counter(4)+recordid(4)):
                 #   data[8:10]  = status word A (base 0x0200) -- BITFIELD, not a voltage
                 #   data[10:12] = status word B (base 0x0003; bit 0x4000 seen set on a
@@ -474,7 +602,9 @@ class CarServer:
                     # label / transponder (метка) = data[15] & 0x02: SET -> tag absent,
                     # 0 -> tag found (confirmed vs Car-Online "Transponder found/not found").
                     self._kv(cur, "label", "found" if not (data[15] & 0x02) else "absent")
-                    self._detect_events(cur, now(), d8, d10, data[15], self._estate, self._elast)
+                    self._detect_events(cur, rts, d8, d10, data[15], self._estate, self._elast)
+                elif typ == 0x0290:
+                    self._sms_record(cur, rts, txt)
                 elif typ == 0x0270 and len(data) >= 3:
                     t = data[2] - 256 if data[2] >= 128 else data[2]
                     self._kv(cur, "temp_raw", data[2])

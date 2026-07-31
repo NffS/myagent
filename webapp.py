@@ -126,8 +126,10 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  #panetoggle{margin-left:auto;border:none;background:none;cursor:pointer;color:#888;font-size:18px;padding:6px 18px;line-height:1;pointer-events:none}
  #tabs:hover #panetoggle{color:#0b6}
  .er{display:flex;gap:10px;padding:2px 16px;border-bottom:1px solid #f0f0f0}
- .et{color:#aaa;flex:0 0 150px} .ee{font-weight:600}
+ .et{color:#aaa;flex:0 0 150px} .ee{font-weight:600;min-width:0;overflow-wrap:anywhere}
  .ek-security{color:#c77700} .ek-ignition{color:#2a6fd6} .ek-door{color:#8a6d1c} .ek-conn{color:#999} .ek-motion{color:#1c8a4e} .ek-engine{color:#0b6} .ek-label{color:#7b1fa2}
+ .ek-sms{color:#0277bd;font-weight:500}
+ .ek-alarm{color:#fff;background:#d32f2f;padding:0 6px;border-radius:4px;font-weight:700}
  .jr{display:flex;gap:10px;padding:2px 16px;border-bottom:1px solid #f0f0f0}
  .jt{color:#aaa;flex:0 0 88px} .js{color:#333;overflow:hidden;text-overflow:ellipsis}
  .jd{flex:0 0 62px;font-weight:700}
@@ -525,8 +527,10 @@ document.getElementById('tabs').addEventListener('click',function(e){
 // ---- events / journal feeds: incremental live-prepend + load-older on scroll ----
 var evState={newest:null,oldest:null,loading:false,done:false};
 var jrState={newest:null,oldest:null,loading:false,done:false};
-function evRow(e){ return '<div class="er"><span class="et">'+localTime(e.ts)+'</span><span class="ee ek-'+(e.kind||'')+'">'+e.event+'</span></div>'; }
-function jrRow(e){ var dev=e.dir==='device'; return '<div class="jr"><span class="jt">'+timeOnly(e.ts)+'</span><span class="jd '+(dev?'dev':'srv')+'">'+(dev?'DEV →':'← SRV')+'</span><span class="js">'+e.summary+'</span></div>'; }
+// SMS event text is device/network-supplied, so escape before it reaches innerHTML
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+function evRow(e){ return '<div class="er"><span class="et">'+localTime(e.ts)+'</span><span class="ee ek-'+esc(e.kind||'')+'">'+esc(e.event)+'</span></div>'; }
+function jrRow(e){ var dev=e.dir==='device'; return '<div class="jr"><span class="jt">'+timeOnly(e.ts)+'</span><span class="jd '+(dev?'dev':'srv')+'">'+(dev?'DEV →':'← SRV')+'</span><span class="js">'+esc(e.summary)+'</span></div>'; }
 async function refreshList(kind){
   var st=kind==='events'?evState:jrState, base='/api/'+kind, row=kind==='events'?evRow:jrRow;
   var el=document.getElementById(kind==='events'?'elist':'jlist');
