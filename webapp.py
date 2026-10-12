@@ -556,6 +556,13 @@ tick(); setInterval(tick,5000);
 
 
 class Handler(BaseHTTPRequestHandler):
+    # Keep-alive: with HTTP/1.0 the server closes every response first and holds a
+    # 60s TIME_WAIT per request; carrier-grade NAT clients (tiny public port block)
+    # reuse a port inside that window and the SYN is rejected -> requests hang ~30s+.
+    # Every response sends Content-Length, so HTTP/1.1 persistent connections are safe.
+    protocol_version = "HTTP/1.1"
+    timeout = 120  # close idle keep-alive sockets (dashboard polls every 5s)
+
     def _page_args(self):
         """Parse ?after=/?before=/?limit= for the journal/events feeds (cursor = row id)."""
         qs = parse_qs(urlparse(self.path).query)
