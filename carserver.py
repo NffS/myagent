@@ -116,7 +116,9 @@ def parse_gps(text):
 
 
 class CarServer:
-    def __init__(self, port, capdir, relay=False, upstream=None, types_path=None):
+    def __init__(self, port, capdir, relay=False, upstream=None, types_path=None, keep_days=None):
+        if keep_days:   # one retention for every table (e.g. 3650 on a big-disk host)
+            self.RETENTION = tuple((t, c, keep_days) for t, c, _ in self.RETENTION)
         self.port = port
         self.capdir = capdir
         self.relay = relay
@@ -147,7 +149,12 @@ class CarServer:
                         "ts TEXT, dir TEXT, summary TEXT)")
         self.db.execute("CREATE TABLE IF NOT EXISTS metrics(id INTEGER PRIMARY KEY,"
                         "ts TEXT, name TEXT, value REAL)")
-        self.db.execute("CREATE INDEX IF NOT EXISTS ix_metrics ON metrics(name, id)")
+        # (name, ts) serves both the graph range query and backfill's MAX(ts) without
+        # walking a metric's whole history; it supersedes the old (name, id) index
+        self.db.execute("CREATE INDEX IF NOT EXISTS ix_metrics_ts ON metrics(name, ts)")
+        self.db.execute("DROP INDEX IF EXISTS ix_metrics")
+        self.db.execute("CREATE INDEX IF NOT EXISTS idx_position_recv ON position(recv_ts)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS ix_telemetry_type ON telemetry(type, recv_ts)")
         self.db.execute("CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,"
                         "ts TEXT, kind TEXT, event TEXT)")
         self.db.commit()
@@ -159,14 +166,13 @@ class CarServer:
             self.db.commit()
         except Exception:
             pass
-        self._jn = 0
+        self._purged = 0
         self._jlast = {}
         self._sigN = []
         self._metric_last = 0
         self._estate = {}   # last EMITTED value per event category (transition detection)
         self._elast = {}    # pending candidate per category: (value, first_ts, first_epoch)
         self._sms = {}      # in-flight incoming SMS being assembled: key -> row id + slices
-        self._en = 0
         self.dblock = threading.Lock()
         self._trace_last = {}
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -185,7 +191,7 @@ class CarServer:
         frames so the dashboard shows last-known values immediately (rather than
         blank until the next, possibly minutes-away, telemetry frame)."""
         cur = self.db.cursor()
-        r = cur.execute("SELECT hex FROM telemetry WHERE type='0x0110' ORDER BY id DESC LIMIT 1").fetchone()
+        r = cur.execute("SELECT hex FROM telemetry WHERE type='0x0110' ORDER BY recv_ts DESC, id DESC LIMIT 1").fetchone()
         if r:
             d = bytes.fromhex(r[0])
             if len(d) >= 16:
@@ -197,17 +203,17 @@ class CarServer:
                 self._kv(cur, "moving", "yes" if (d8 & 0x0400) else "no")
                 self._kv(cur, "label", "found" if not (d[15] & 0x02) else "absent")
         # seed tag voltage from the most recent in-cluster (90-106) 0x0110 record
-        for (hx,) in cur.execute("SELECT hex FROM telemetry WHERE type='0x0110' ORDER BY id DESC LIMIT 40"):
+        for (hx,) in cur.execute("SELECT hex FROM telemetry WHERE type='0x0110' ORDER BY recv_ts DESC, id DESC LIMIT 40"):
             b = bytes.fromhex(hx)
             if len(b) >= 16 and 90 <= b[12] <= 106:
                 self._kv(cur, "pin_voltage", round(b[12] * 0.02755, 2))
                 break
-        r = cur.execute("SELECT hex FROM telemetry WHERE type='0x0270' ORDER BY id DESC LIMIT 1").fetchone()
+        r = cur.execute("SELECT hex FROM telemetry WHERE type='0x0270' ORDER BY recv_ts DESC, id DESC LIMIT 1").fetchone()
         if r:
             d = bytes.fromhex(r[0])
             if len(d) >= 3:
                 self._kv(cur, "temperature", d[2] - 256 if d[2] >= 128 else d[2])
-        r = cur.execute("SELECT hex FROM telemetry WHERE type='0x0250' ORDER BY id DESC LIMIT 1").fetchone()
+        r = cur.execute("SELECT hex FROM telemetry WHERE type='0x0250' ORDER BY recv_ts DESC, id DESC LIMIT 1").fetchone()
         if r:
             d = bytes.fromhex(r[0])
             if len(d) >= 2:
@@ -256,7 +262,7 @@ class CarServer:
         )
         for name, typ, fn in jobs:
             last = cur.execute("SELECT MAX(ts) FROM metrics WHERE name=?", (name,)).fetchone()[0] or ""
-            rows = cur.execute("SELECT recv_ts,hex FROM telemetry WHERE type=? AND recv_ts>? ORDER BY id",
+            rows = cur.execute("SELECT recv_ts,hex FROM telemetry WHERE type=? AND recv_ts>? ORDER BY recv_ts, id",
                                (typ, last)).fetchall()
             ins, lastmin = [], None
             for ts, hx in rows:
@@ -415,9 +421,6 @@ class CarServer:
         with self.dblock:
             cur = self.db.cursor()
             self._emit_event(cur, ts or now(), kind, event)
-            self._en += 1
-            if self._en % 40 == 0:
-                cur.execute("DELETE FROM events WHERE id < (SELECT max(id)-3000 FROM events)")
             self.db.commit()
 
     def backfill_events(self):
@@ -428,7 +431,7 @@ class CarServer:
             return
         cut = (datetime.datetime.now() - datetime.timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
         # fetchall FIRST: _detect_events reuses cur for INSERTs, which would clobber a live SELECT cursor
-        rows = cur.execute("SELECT recv_ts,hex FROM telemetry WHERE type='0x0110' AND recv_ts>? ORDER BY id", (cut,)).fetchall()
+        rows = cur.execute("SELECT recv_ts,hex FROM telemetry WHERE type='0x0110' AND recv_ts>? ORDER BY recv_ts, id", (cut,)).fetchall()
         state, last = {}, {}
         for ts, hx in rows:
             b = bytes.fromhex(hx)
@@ -453,7 +456,7 @@ class CarServer:
         # alarms: rising edges of the alarm bit across the stored status frames
         active = False
         for ts, hx in cur.execute("SELECT recv_ts,hex FROM telemetry WHERE type='0x0110'"
-                                  " ORDER BY id").fetchall():
+                                  " ORDER BY recv_ts, id").fetchall():
             b = bytes.fromhex(hx)
             if len(b) < 16:
                 continue
@@ -467,7 +470,7 @@ class CarServer:
         # behave identically to the live path
         self._sms = {}
         for ts, hx in cur.execute("SELECT recv_ts,hex FROM telemetry WHERE type='0x0290'"
-                                  " ORDER BY id").fetchall():
+                                  " ORDER BY recv_ts, id").fetchall():
             self._sms_record(cur, ts, bytes.fromhex(hx).decode("ascii", "replace"))
         self._sms = {}
         added = cur.execute("SELECT count(*) FROM events").fetchone()[0] - before
@@ -486,17 +489,23 @@ class CarServer:
                  % (self.BACKFILL_TAG, added))
 
     # retention per table: (table, time-column, days) -- raw journal 7d, everything else 90d
+    # by default; --keep-days overrides all of them
     RETENTION = (("metrics", "ts", 90), ("events", "ts", 90), ("position", "recv_ts", 90),
                  ("telemetry", "recv_ts", 90), ("journal", "ts", 7))
 
     def purge_old(self):
-        """Retention: keep the raw journal 7 days, all other history 90 days."""
+        """Enforce RETENTION (at startup, then hourly from journal_add). Rows are appended
+        in time order, so each table is trimmed by id: walking the primary key from the
+        oldest row to the first one inside the window touches only the rows being
+        deleted, never the years being kept."""
         now = datetime.datetime.now()
         cur = self.db.cursor()
         for tbl, col, days in self.RETENTION:
             cut = (now - datetime.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-            cur.execute("DELETE FROM %s WHERE %s < ?" % (tbl, col), (cut,))
+            cur.execute("DELETE FROM %s WHERE id < (SELECT id FROM %s NOT INDEXED"
+                        " WHERE %s >= ? ORDER BY id LIMIT 1)" % (tbl, tbl, col), (cut,))
         self.db.commit()
+        self._purged = time.time()
 
     def log(self, msg):
         line = "[%s] %s" % (now(), msg)
@@ -667,11 +676,9 @@ class CarServer:
         with self.dblock:
             cur = self.db.cursor()
             cur.execute("INSERT INTO journal(ts,dir,summary) VALUES(?,?,?)", (now(), direction, text))
-            self._jn += 1
-            if self._jn % 500 == 0:   # keep the raw journal to ~7 days (time-based)
-                cut = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
-                cur.execute("DELETE FROM journal WHERE ts < ?", (cut,))
             self.db.commit()
+            if t - self._purged > 3600:
+                self.purge_old()
 
     def summary(self, f):
         """One-line, minimal, human-readable trace of a supported frame."""
@@ -898,8 +905,11 @@ def main():
     ap.add_argument("--upstream", default="free.car-online.pro:11111")
     ap.add_argument("--types", default=os.path.join(here, "supported_types.json"),
                     help="JSON file listing supported device->server frame types")
+    ap.add_argument("--keep-days", type=int, default=None,
+                    help="keep ALL history (incl. raw journal) this many days; default 90 (journal 7)")
     a = ap.parse_args()
-    CarServer(a.port, a.capdir, relay=a.relay, upstream=a.upstream, types_path=a.types).serve()
+    CarServer(a.port, a.capdir, relay=a.relay, upstream=a.upstream, types_path=a.types,
+              keep_days=a.keep_days).serve()
 
 
 if __name__ == "__main__":

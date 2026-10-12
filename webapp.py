@@ -609,7 +609,7 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     hours = 24.0
                 cutoff = (datetime.datetime.now() - datetime.timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M:%S")
-                rows = q("SELECT ts,value FROM metrics WHERE name=? AND ts>=? ORDER BY id", (name, cutoff))
+                rows = q("SELECT ts,value FROM metrics WHERE name=? AND ts>=? ORDER BY ts", (name, cutoff))
                 step = max(1, len(rows) // 1500)  # downsample to <=1500 points
                 epoch0 = datetime.datetime(1970, 1, 1)
                 xs, ys = [], []
@@ -630,8 +630,9 @@ class Handler(BaseHTTPRequestHandler):
                     r = rows[0]
                     pos = {"recv_ts": r[0], "dev_time": r[1], "lat": r[2],
                            "lon": r[3], "speed_knots": r[4], "course": r[5]}
-                cnt = q("SELECT count(*) FROM position")[0][0]
-                out = {"kv": kv, "position": pos, "positions": cnt,
+                # (no count(*) of position here: polled every 5s, it would scan the
+                # whole table -- years of rows with a long retention)
+                out = {"kv": kv, "position": pos,
                        "speed_kmh": round(pos["speed_knots"] * 1.852, 1) if pos else None}
                 self._send(200, json.dumps(out), "application/json")
             elif self.path.startswith("/api/track"):

@@ -29,20 +29,8 @@ while [ "$(total)" -gt "$FILE_MAXBYTES" ]; do
     rm -f "$oldest"
 done
 
-# 2b) DB retention: raw journal 7 days, all other time-series data 90 days
-python3 - <<'PY' 2>&1 | sed 's/^/  db: /'
-import sqlite3, datetime
-d = sqlite3.connect('/root/captures/car.db', timeout=15)
-now = datetime.datetime.now()
-for t, c, days in (('metrics','ts',90), ('events','ts',90), ('position','recv_ts',90),
-                   ('telemetry','recv_ts',90), ('journal','ts',7)):
-    cut = (now - datetime.timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
-    try:
-        n = d.execute('DELETE FROM %s WHERE %s < ?' % (t, c), (cut,)).rowcount
-        d.commit(); print('%s: purged %d rows older than %dd' % (t, n, days))
-    except Exception as e:
-        print('%s: %s' % (t, e))
-PY
+# (car.db retention is NOT handled here: carserver enforces it itself, at startup and
+#  hourly -- default raw journal 7 days / everything else 90 days, or --keep-days N)
 
 # 3) JOURNALD: cap the systemd journal to one month / 2 GB
 journalctl --vacuum-time=1month --vacuum-size=2G 2>&1 | sed 's/^/  journald: /'
